@@ -45,10 +45,11 @@ VALUES (@id, @name)
                 
                 var sql = @"
 UPDATE GUILD_INFO
-SET USE_COUNT = USE_COUNT + 1
+SET USE_COUNT = USE_COUNT + 1,
+    NAME = @name
 WHERE ID = @id
     ";
-                var affectedRows = await connection.ExecuteAsync(sql, new { id = guildId });
+                var affectedRows = await connection.ExecuteAsync(sql, new { id = guildId , name = guildName });
                 if (affectedRows <= 0)
                 {
                     return false;

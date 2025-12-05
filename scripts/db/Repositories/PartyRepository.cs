@@ -368,5 +368,34 @@ WHERE MESSAGE_KEY = @MESSAGE_KEY
         }   
     }
 
+
+    public static async Task<List<PartyEntity>> CycleExpiredPartyList()
+    {
+        try
+        {
+            var connection = await DatabaseController.GetConnectionAsync();
+
+            // 만료 시간이 지난 파티 목록 조회
+            var parties = (await connection.QueryAsync<PartyEntity>(
+                @"
+SELECT * 
+FROM PARTY 
+WHERE IS_EXPIRED = FALSE
+AND EXPIRE_DATE <= NOW()
+")).ToList();
+
+            if (!parties.Any())
+            {
+                return new List<PartyEntity>();
+            }
+            
+            return parties;
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine(e);
+            return new List<PartyEntity>();
+        }
+    }
 }
 

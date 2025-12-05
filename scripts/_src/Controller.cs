@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Cryptography;
 using DiscodeBot.scripts.db;
 using DiscodeBot.scripts.db.Models;
@@ -11,23 +12,24 @@ public class Controller
 {
     private readonly DiscordSocketClient _client;
     
-    // private Dictionary<string, Party> _partyTable = new();
-    
     private const int MIN_COUNT = 1;
     private const int MAX_COUNT = 200;
-    private const int MAX_HOUR = 24;
-    private const string VERSION = "1.0.6";
+    private const int MAX_HOUR = 168;
+    private const string VERSION = "1.0.8";
 
     private const string JOIN_KEY = "참가";
     private const string LEAVE_KEY = "나가기";
     private const string CLOSE_KEY = "일시정지";
+    private const string OPTION_KEY = "기능";
+
+    private const string EXPIRE_BUTTON_KEY = "expire";
+    private const string OPTION_BUTTON_KEY = "button";
+    
     private const string EXPIRE_KEY = "만료(영구)";
     private const string PING_KEY = "호출(파티원)";
-
-    private const string EXPIRE_BUTTEN_KEY = "expire";
     
-    private const string YES_BUTTEN_KEY = "yes";
-    private const string NO_BUTTEN_KEY = "no";
+    private const string YES_BUTTON_KEY = "yes";
+    private const string NO_BUTTON_KEY = "no";
     
     
     public Controller(DiscordSocketClient client)
@@ -39,7 +41,47 @@ public class Controller
         _client.SlashCommandExecuted += HandleSlashCommandAsync;
         _client.ButtonExecuted += HandleButtonAsync;
         _client.Ready += InitCommands;
+        Cycle();
     }
+
+    // ReSharper disable once FunctionRecursiveOnAllPaths
+    private async void Cycle()
+    {
+        try
+        {
+            // 다음 정각(00초)까지 대기
+            var now = DateTime.Now;
+            var secondsUntilNextMinute = 60 - now.Second;
+            var millisecondsToSubtract = now.Millisecond;
+            var delay = TimeSpan.FromSeconds(secondsUntilNextMinute).Subtract(TimeSpan.FromMilliseconds(millisecondsToSubtract));
+            
+            Console.WriteLine($"[Cycle] 다음 정각까지 대기 중... (현재: {now:HH:mm:ss.fff}, 대기: {delay.TotalSeconds:F1}초)");
+            await Task.Delay(delay);
+            
+            // 작업 실행
+            Console.WriteLine($"[Cycle] 만료 파티 체크 시작 (시간: {DateTime.Now:HH:mm:ss})");
+            var partyList = await PartyRepository.CycleExpiredPartyList();
+            
+            if (partyList.Count > 0)
+            {
+                Console.WriteLine($"[Cycle] {partyList.Count}개의 만료 파티 발견");
+                foreach (var partyEntity in partyList)
+                {
+                    await ExpirePartyAsync(partyEntity);
+                }
+            }
+            
+            // 다음 사이클 시작
+            Cycle();
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine($"[Cycle] 오류 발생: {e.Message}");
+            Console.WriteLine(e);
+            Cycle();
+        }
+    }
+
     private async Task HandleSlashCommandAsync(SocketSlashCommand command)
     {
         var commandName = command.Data.Name;
@@ -69,7 +111,7 @@ public class Controller
                 return;
             }
             
-            if (!await GuildRepository.GuildCheck(guildChannel.Id, guildChannel.Name))
+            if (!await GuildRepository.GuildCheck(guildChannel.Id, guildChannel.Guild.Name))
             {
                 await command.RespondAsync("🚫 이 채널을 검증할 수 없거나 제한되었습니다.", ephemeral: true);
                 return;
@@ -148,6 +190,7 @@ public class Controller
         await command.RespondAsync("초기화 중입니다...");
         var message = await command.GetOriginalResponseAsync();
         
+        var now = DateTime.Now;
         var party = new PartyEntity
         {
             DISPLAY_NAME = partyName,
@@ -159,7 +202,7 @@ public class Controller
             OWNER_NICKNAME = command.User is SocketGuildUser user
                 ? string.IsNullOrEmpty(user.Nickname) ? user.Username : user.Nickname
                 : command.User.Username,
-            EXPIRE_DATE = DateTime.Now + time
+            EXPIRE_DATE = now.AddSeconds(-now.Second).AddMilliseconds(-now.Millisecond).Add(time),
         };
         
         if (!await PartyRepository.CreatePartyAsync(party))
@@ -282,70 +325,142 @@ public class Controller
                 if (await PartyRepository.RemoveUser(messageId, userId) && await PartyRepository.UpdateParty(messageId))
                 {
                     message = $"❌ {party.DISPLAY_NAME} 파티에서 나갔습니다.";
-                    party.Members.RemoveAll(x => x.USER_ID == userId);
-                    party.WaitMembers.RemoveAll(x => x.USER_ID == userId);
+                    party.Members = await PartyRepository.GetPartyMemberList(messageId);
+                    party.WaitMembers = await PartyRepository.GetPartyWaitMemberList(messageId);
                 }
                 else
                 {
                     message = $"파티에서 나가기에 실패하엿습니다. 다시 시도해주세요.";
                 }
                 break;
-            case CLOSE_KEY:
-                var closed = party.IS_CLOSED;
-                var e = party.IS_CLOSED ? "오픈" : "마감";
+            case OPTION_KEY:
+                await component.RespondAsync("불러오는 중...", ephemeral: true); 
                 
-                if (!isOwner && !isAdmin)
-                {
-                    await component.RespondAsync($"파티를 생성한 사람만 {e}할 수 있습니다.", ephemeral: true);
-                    return;
-                }
-                
-                if (!await PartyRepository.SetPartyClose(messageId, !closed))
-                {
-                    await component.RespondAsync($"파티 조작에 실패하였습니다.", ephemeral: true);
-                    return;   
-                }
+                // 옵션 버튼들 만들기
+                var componentBuilder = new ComponentBuilder();
 
-                party.IS_CLOSED = !closed;
-                message = $"{userRoleString}님이 {party.DISPLAY_NAME} 파티를 {e}하였습니다.";
-                isAllMessage = true;
-                break;
-            case PING_KEY:
-                if (!isOwner && !isAdmin && !isPartyMember)
+                if (party.Members.Count >= 1)
                 {
-                    await component.RespondAsync("관리자, 파티원, 파티장만 호출할 수 있습니다!", ephemeral: true);
-                    return;
+                    componentBuilder.WithButton(PING_KEY, $"party_{OPTION_BUTTON_KEY}_{messageId}_{PING_KEY}", ButtonStyle.Success);
                 }
                 
-                // 파티원 전체 멘션
-                var mentions = string.Join(" ", party.Members.Select(m => $"<@{m.USER_ID}>"));
-                isAllMessage = true;
-                message = $"🔔 {userRoleString}님이 파티원을 호출하였습니다!\n{mentions}";
-                break;
-            case EXPIRE_KEY:
-                // 권한 확인: 파티장 또는 관리자만
-                if (!isOwner && !isAdmin)
+                componentBuilder.WithButton(party.IS_CLOSED ? "재개" : CLOSE_KEY, $"party_{OPTION_BUTTON_KEY}_{messageId}_{CLOSE_KEY}", party.IS_CLOSED ? ButtonStyle.Success : ButtonStyle.Danger);
+                componentBuilder.WithButton(EXPIRE_KEY, $"party_{OPTION_BUTTON_KEY}_{messageId}_{EXPIRE_KEY}", ButtonStyle.Secondary);
+                
+                await component.ModifyOriginalResponseAsync( m =>
                 {
-                    await component.RespondAsync("파티장 또는 관리자만 만료시킬 수 있습니다.", ephemeral: true);
-                    return;
-                }
-                
-                // 확인 버튼 생성
-                var confirmComponent = new ComponentBuilder()
-                    .WithButton("예", $"party_{EXPIRE_BUTTEN_KEY}_{messageId}_{YES_BUTTEN_KEY}", ButtonStyle.Danger)
-                    .WithButton("아니오", $"party_{EXPIRE_BUTTEN_KEY}_{messageId}_{NO_BUTTEN_KEY}", ButtonStyle.Secondary)
-                    .Build();
-                
-                await component.RespondAsync(
-                    $"⚠️ **{party.DISPLAY_NAME}** 파티를 영구적으로 만료시키시겠습니까?\n" +
-                    "만료된 파티는 복구할 수 없습니다.", 
-                    components: confirmComponent, 
-                    ephemeral: true);
+                    m.Content = "버튼을 선택해주세요.";
+                    m.Components = componentBuilder.Build();
+                });
+
+                await RespondMessageWithExpire(component, time: 30);
                 return;
-            
-            case EXPIRE_BUTTEN_KEY:
+            case OPTION_BUTTON_KEY:
                 
-                if (parts[3] == YES_BUTTEN_KEY)
+                // 옵션 메시지를 업데이트로 제거
+                await component.UpdateAsync(msg =>
+                {
+                    msg.Content = "처리 중...";
+                    msg.Components = null;
+                });
+                
+                switch (parts[3])
+                {
+                    case CLOSE_KEY:
+                        var closed = party.IS_CLOSED;
+                        var e = party.IS_CLOSED ? "오픈" : "마감";
+                        
+                        if (!isOwner && !isAdmin)
+                        {
+                            await component.ModifyOriginalResponseAsync(msg =>
+                            {
+                                msg.Content = $"❌ 파티를 생성한 사람만 {e}할 수 있습니다.";
+                            });
+
+                            await RespondMessageWithExpire(component);
+                            return;
+                        }
+                        
+                        if (!await PartyRepository.SetPartyClose(messageId, !closed))
+                        {
+                            await component.ModifyOriginalResponseAsync(msg =>
+                            {
+                                msg.Content = "❌ 파티 조작에 실패하였습니다.";
+                            });
+                            
+                            await RespondMessageWithExpire(component);
+                            return;   
+                        }
+
+                        // 성공 메시지로 업데이트
+                        await component.ModifyOriginalResponseAsync(msg =>
+                        {
+                            msg.Content = $"✅ 파티를 {e}했습니다.";
+                        });
+                        
+                        await RespondMessageWithExpire(component);
+                        
+
+                        party.IS_CLOSED = !closed;
+                        message = $"{userRoleString}님이 {party.DISPLAY_NAME} 파티를 {e}하였습니다.";
+                        isAllMessage = true;
+                        break;
+                    case PING_KEY:
+                        if (!isOwner && !isAdmin && !isPartyMember)
+                        {
+                            await component.ModifyOriginalResponseAsync(msg =>
+                            {
+                                msg.Content = "❌ 관리자, 파티원, 파티장만 호출할 수 있습니다!";
+                            });
+                            
+                            await RespondMessageWithExpire(component);
+                            return;
+                        }
+                        
+                        // 성공 메시지로 업데이트
+                        await component.ModifyOriginalResponseAsync(msg =>
+                        {
+                            msg.Content = "✅ 파티원을 호출했습니다.";
+                        });
+                        
+                        await RespondMessageWithExpire(component);
+                        
+                        // 파티원 전체 멘션
+                        var mentions = string.Join(" ", party.Members.Select(m => $"<@{m.USER_ID}>"));
+                        isAllMessage = true;
+                        message = $"🔔 {userRoleString}님이 파티원을 호출하였습니다!\n{mentions}";
+                        break;
+                    case EXPIRE_KEY:
+                        // 권한 확인: 파티장 또는 관리자만
+                        if (!isOwner && !isAdmin)
+                        {
+                            await component.ModifyOriginalResponseAsync(msg =>
+                            {
+                                msg.Content = "❌ 파티장 또는 관리자만 만료시킬 수 있습니다.";
+                            });
+                            
+                            await RespondMessageWithExpire(component);
+                            return;
+                        }
+                        
+                        // 확인 버튼 생성
+                        var confirmComponent = new ComponentBuilder()
+                            .WithButton("예", $"party_{EXPIRE_BUTTON_KEY}_{messageId}_{YES_BUTTON_KEY}", ButtonStyle.Danger)
+                            .WithButton("아니오", $"party_{EXPIRE_BUTTON_KEY}_{messageId}_{NO_BUTTON_KEY}", ButtonStyle.Secondary)
+                            .Build();
+                        
+                        await component.ModifyOriginalResponseAsync(msg =>
+                        {
+                            msg.Content = $"⚠️ **{party.DISPLAY_NAME}** 파티를 영구적으로 만료시키시겠습니까?\n만료된 파티는 복구할 수 없습니다.";
+                            msg.Components = confirmComponent;
+                        });
+                        _ = RespondMessageWithExpire(component, time: 30);
+                        return;   
+                }
+                break;
+            case EXPIRE_BUTTON_KEY:
+                
+                if (parts[3] == YES_BUTTON_KEY)
                 {
                     if (await ExpirePartyAsync(party, component.Channel))
                     {
@@ -354,6 +469,8 @@ public class Controller
                             msg.Content = $"✅ **{party.DISPLAY_NAME}** 파티를 만료시켰습니다.";
                             msg.Components = null;
                         });
+                        
+                        _ = RespondMessageWithExpire(component);
                         message = $"❌ {userRoleString}님이 파티를 만료시켰습니다.";
                         isAllMessage = true;
                     }
@@ -364,6 +481,8 @@ public class Controller
                             msg.Content = $"오류로 인하여 파티를 만료시키지 못하였습니다.";
                             msg.Components = null;
                         });
+                        
+                        _ = RespondMessageWithExpire(component);
                     }
                 }
                 else
@@ -373,6 +492,8 @@ public class Controller
                         msg.Content = "❌ 만료가 취소되었습니다.";
                         msg.Components = null;
                     });
+                    
+                    _ = RespondMessageWithExpire(component);
                     return;
                 }
                 break;
@@ -403,7 +524,7 @@ public class Controller
             }
             else
             {
-                await component.RespondAsync(message, ephemeral: true);
+                await RespondMessageWithExpire(component, message);
             }
         }
         else
@@ -411,6 +532,65 @@ public class Controller
             await component.Channel.SendMessageAsync($"{party.DISPLAY_NAME} 파티에 대한 원본 메세지를 찾을 수 없습니다. 파티를 해산합니다.");
             await PartyRepository.ExpiredParty(party.MESSAGE_KEY);
         }
+    }
+
+    private static async Task RespondMessageWithExpire(SocketMessageComponent component, string? message = null, int time = 10)
+    {
+        var exMessage = $"(해당 메세지는 {time}초 후 삭제됩니다.)";
+        
+        if (message != null)
+        {
+            await component.RespondAsync(message + exMessage, ephemeral: true);
+        }
+        else
+        {
+            message = (await component.GetOriginalResponseAsync()).Content;
+        }
+
+        var stopwatch = Stopwatch.StartNew();
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                while (true)
+                {
+                    var leftSeconds = time - (int)stopwatch.Elapsed.TotalSeconds;
+                    
+                    if (leftSeconds <= 0)
+                    {
+                        await component.DeleteOriginalResponseAsync();
+                        break;
+                    }
+
+                    exMessage = $"(해당 메세지는 {leftSeconds}초 후 삭제됩니다.)";
+                    
+                    try
+                    {
+                        await component.ModifyOriginalResponseAsync(m =>
+                        {
+                            m.Content = message + exMessage;
+                        });
+                    }
+                    catch
+                    {
+                        // 메시지가 이미 삭제되었거나 수정 실패
+                        break;
+                    }
+
+                    await Task.Delay(TimeSpan.FromSeconds(1));
+                    
+                    // 메시지가 외부에서 변경되었는지 확인
+                    var replace = await component.GetOriginalResponseAsync();
+                    if (replace == null) break;
+                    if (message != replace.Content.Replace(exMessage, "")) break;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[RespondMessageWithExpire] 오류: {ex.Message}");
+            }
+        });
     }
 
     private async Task InitCommands()
@@ -467,7 +647,7 @@ public class Controller
         }
         
         // 만료시간 추가 (강조 표시)
-        description += $"\n\n\n**만료시간: {party.EXPIRE_DATE:yyyy/MM/dd tt hh:mm:ss}**";
+        description += $"\n\n\n**만료시간: {party.EXPIRE_DATE:yyyy/MM/dd tt h:mm}**";
         
         var color = Color.Blue;
         if (party.MAX_COUNT_MEMBER == party.Members.Count) color = Color.Green;
@@ -478,7 +658,7 @@ public class Controller
             .WithTitle(title)
             .WithDescription(description)
             .WithColor(color)
-            .WithFooter($"make-by-ojh1158 {VERSION}")
+            .WithFooter($"버그제보(Discord): ojh1158 Version: {VERSION}")
             .WithCurrentTimestamp()
             .Build();
         
@@ -508,15 +688,8 @@ public class Controller
         }
 
         component.WithButton(LEAVE_KEY, $"party_{LEAVE_KEY}_{partyKey}", ButtonStyle.Danger);
-        
-        if (party.Members.Count >= 1)
-        {
-            component.WithButton(PING_KEY, $"party_{PING_KEY}_{partyKey}", ButtonStyle.Success);
-        }
 
-        component.WithButton(party.IS_CLOSED ? "재개" : CLOSE_KEY , $"party_{CLOSE_KEY}_{partyKey}", party.IS_CLOSED ? ButtonStyle.Success : ButtonStyle.Danger);
-
-        component.WithButton(EXPIRE_KEY,$"party_{EXPIRE_KEY}_{partyKey}", ButtonStyle.Secondary);
+        component.WithButton(OPTION_KEY, $"party_{OPTION_KEY}_{partyKey}", ButtonStyle.Secondary);
         
         return component.Build();
     }
