@@ -38,6 +38,11 @@ VALUES (@id, @name)
             }
             else
             {
+                if (guildInfoEntity.BAN_FLAG)
+                {
+                   return false; 
+                }
+                
                 var sql = @"
 UPDATE GUILD_INFO
 SET USE_COUNT = USE_COUNT + 1

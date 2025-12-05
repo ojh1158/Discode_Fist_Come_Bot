@@ -69,7 +69,7 @@ public class Controller
                 return;
             }
             
-            if (await GuildRepository.GuildCheck(guildChannel.Id, guildChannel.Name))
+            if (!await GuildRepository.GuildCheck(guildChannel.Id, guildChannel.Name))
             {
                 await command.RespondAsync("🚫 이 채널을 검증할 수 없거나 제한되었습니다.", ephemeral: true);
                 return;
@@ -145,11 +145,14 @@ public class Controller
             time = TimeSpan.FromHours(MAX_HOUR);
         }
         
+        await command.RespondAsync("초기화 중입니다...");
+        var message = await command.GetOriginalResponseAsync();
+        
         var party = new PartyEntity
         {
             DISPLAY_NAME = partyName,
             MAX_COUNT_MEMBER = count,
-            // MESSAGE_KEY = ,
+            MESSAGE_KEY = message.Id,
             GUILD_KEY = (ulong)command.GuildId!,
             CHANNEL_KEY = (ulong)command.ChannelId!,
             OWNER_KEY = command.User.Id,
@@ -159,19 +162,23 @@ public class Controller
             EXPIRE_DATE = DateTime.Now + time
         };
         
-        var updatedEmbed = UpdatedEmbed(party);
-        var component = UpdatedComponent(party);
-
-        await command.RespondAsync(embed: updatedEmbed, components: component);
-        var message = await command.GetOriginalResponseAsync();
-
-        party.MESSAGE_KEY = message.Id;
-        
         if (!await PartyRepository.CreatePartyAsync(party))
         {
+            await message.DeleteAsync();
             await command.FollowupAsync("파티 생성에 실패하였습니다.", ephemeral: true);
             return;
         }
+
+        var updatedEmbed = UpdatedEmbed(party);
+        var component = UpdatedComponent(party);
+        
+        await message.ModifyAsync(m =>
+        {
+            m.Embed = updatedEmbed;
+            m.Components = component;
+            m.Content = "";
+        });
+        
         
         await command.FollowupAsync("파티를 생성하였습니다!", ephemeral: true);
     }
@@ -182,7 +189,7 @@ public class Controller
         
         // CustomId 파싱: "party_join_{partyId}" 또는 "party_leave_{partyId}"
         var parts = customId.Split('_');
-        if (parts.Length < 4 || parts[0] != "party")
+        if (parts.Length < 3 || parts[0] != "party")
             return;
         
         var action = parts[1]; // "join", "leave", "expire" 등
@@ -237,6 +244,12 @@ public class Controller
                 if (await PartyRepository.AddUser(party.MESSAGE_KEY, guildUser.Id, userNickname, true))
                 {
                     message = "파티 인원이 가득 찼습니다. 대기 인원으로 등록되었습니다.";
+                    party.WaitMembers.Add(new PartyMemberEntity
+                    {
+                        USER_ID = userId,
+                        MESSAGE_KEY = messageId,
+                        USER_NICKNAME = userNickname
+                    });
                 }
                 else
                 {
@@ -248,6 +261,12 @@ public class Controller
                 if (await PartyRepository.AddUser(party.MESSAGE_KEY, guildUser.Id, userNickname, false))
                 {
                     message = $"✅ {party.DISPLAY_NAME} 파티에 참가했습니다!";
+                    party.Members.Add(new PartyMemberEntity
+                    {
+                        USER_ID = userId,
+                        MESSAGE_KEY = messageId,
+                        USER_NICKNAME = userNickname
+                    });
                 }
                 else
                 {
@@ -263,6 +282,8 @@ public class Controller
                 if (await PartyRepository.RemoveUser(messageId, userId) && await PartyRepository.UpdateParty(messageId))
                 {
                     message = $"❌ {party.DISPLAY_NAME} 파티에서 나갔습니다.";
+                    party.Members.RemoveAll(x => x.USER_ID == userId);
+                    party.WaitMembers.RemoveAll(x => x.USER_ID == userId);
                 }
                 else
                 {
@@ -285,6 +306,7 @@ public class Controller
                     return;   
                 }
 
+                party.IS_CLOSED = !closed;
                 message = $"{userRoleString}님이 {party.DISPLAY_NAME} 파티를 {e}하였습니다.";
                 isAllMessage = true;
                 break;
@@ -325,14 +347,24 @@ public class Controller
                 
                 if (parts[3] == YES_BUTTEN_KEY)
                 {
-                    await ExpirePartyAsync(party);
-                    await component.UpdateAsync(msg =>
+                    if (await ExpirePartyAsync(party, component.Channel))
                     {
-                        msg.Content = $"✅ **{party.DISPLAY_NAME}** 파티를 만료시켰습니다.";
-                        msg.Components = null;
-                    });
-                    message = $"❌ {userRoleString}님이 파티를 만료시켰습니다.";
-                    isAllMessage = true;
+                        await component.UpdateAsync(msg =>
+                        {
+                            msg.Content = $"✅ **{party.DISPLAY_NAME}** 파티를 만료시켰습니다.";
+                            msg.Components = null;
+                        });
+                        message = $"❌ {userRoleString}님이 파티를 만료시켰습니다.";
+                        isAllMessage = true;
+                    }
+                    else
+                    {
+                        await component.UpdateAsync(msg =>
+                        {
+                            msg.Content = $"오류로 인하여 파티를 만료시키지 못하였습니다.";
+                            msg.Components = null;
+                        });
+                    }
                 }
                 else
                 {
@@ -489,18 +521,27 @@ public class Controller
         return component.Build();
     }
     
-    private async Task ExpirePartyAsync(PartyEntity party, ISocketMessageChannel? channel = null)
+    private async Task<bool> ExpirePartyAsync(PartyEntity party, ISocketMessageChannel? channel = null)
     {
-        if (channel != null)
-        {
-            var embed = UpdatedEmbed(party);
+        channel ??= await _client.GetChannelAsync(party.CHANNEL_KEY) as ISocketMessageChannel;
+
+        if (channel == null) return false;
+        
+        var result = await PartyRepository.ExpiredParty(party.MESSAGE_KEY);
+
+        if (!result) return false;
+        
+        party.IS_EXPIRED = true;
+        
+        var embed = UpdatedEmbed(party);
             
-            await channel.ModifyMessageAsync(party.MESSAGE_KEY, msg =>
-            {
-                msg.Embed = embed;
-                msg.Components = null;
-            });
-        }
+        await channel!.ModifyMessageAsync(party.MESSAGE_KEY, msg =>
+        {
+            msg.Embed = embed;
+            msg.Components = null;
+        });
+        
+        return true;
     }
 
 }

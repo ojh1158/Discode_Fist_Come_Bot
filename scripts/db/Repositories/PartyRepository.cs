@@ -26,7 +26,7 @@ public class PartyRepository
         {
             var sql = @"
 INSERT INTO PARTY (DISPLAY_NAME, MAX_COUNT_MEMBER, MESSAGE_KEY, GUILD_KEY, CHANNEL_KEY, OWNER_KEY, OWNER_NICKNAME, EXPIRE_DATE, IS_CLOSED)
-VALUES (@DISPLAY_NAME, @MAX_COUNT, @MESSAGE_KEY, @GUILD_KEY, @CHANNEL_KEY, @OWNER_KEY, @OWNER_NICKNAME, @EXPIRE_DATE, 0)
+VALUES (@DISPLAY_NAME, @MAX_COUNT_MEMBER, @MESSAGE_KEY, @GUILD_KEY, @CHANNEL_KEY, @OWNER_KEY, @OWNER_NICKNAME, @EXPIRE_DATE, 0)
     ";
             var connection = await DatabaseController.GetConnectionAsync();
 
@@ -47,12 +47,13 @@ VALUES (@DISPLAY_NAME, @MAX_COUNT, @MESSAGE_KEY, @GUILD_KEY, @CHANNEL_KEY, @OWNE
             var sql =
                 @"
 SELECT EXISTS(
-SELECT 1
-FROM PARTY
-WHERE DISPLAY_NAME = @DisplayName
-AND   GUILD_KEY = @GuildKey
-LIMIT 1
-            );";
+    SELECT 1
+    FROM PARTY
+    WHERE DISPLAY_NAME = @DisplayName
+    AND   GUILD_KEY = @GuildKey
+    AND IS_EXPIRED = FALSE
+)
+";
 
             var connection = await DatabaseController.GetConnectionAsync();
             return await connection.ExecuteScalarAsync<bool>(sql,
@@ -163,11 +164,13 @@ SELECT EXISTS(
     FROM PARTY_MEMBER
     WHERE MESSAGE_KEY = @MESSAGE_KEY
       AND USER_ID = @USER_ID
+      AND EXIT_FLAG = false
     UNION ALL
     SELECT 1
     FROM PARTY_WAIT_MEMBER
     WHERE MESSAGE_KEY = @MESSAGE_KEY
       AND USER_ID = @USER_ID
+      AND EXIT_FLAG = false
     LIMIT 1
     )
 ",
@@ -207,6 +210,7 @@ WHERE (
     SELECT COUNT(*) 
     FROM PARTY_MEMBER 
     WHERE MESSAGE_KEY = @MESSAGE_KEY
+    AND EXIT_FLAG = FALSE
 ) < (
     SELECT MAX_COUNT_MEMBER 
     FROM PARTY 
@@ -233,22 +237,27 @@ WHERE (
 
         try
         {
-            var sql = @"
-UPDATE PARTY_MEMBER AS M, 
-    PARTY_WAIT_MEMBER AS WM
-SET M.EXIT_FLAG = true,
-    WM.EXIT_FLAG = true
-WHERE 
-    (M.USER_ID = @USER_ID AND M.MESSAGE_KEY = @MESSAGE_KEY)
-OR
-    (WM.USER_ID = @USER_ID AND WM.MESSAGE_KEY = @MESSAGE_KEY)
-    ";
-            
-            var affectedRows = await connection.ExecuteAsync(sql,
+            // 두 개의 별도 UPDATE로 분리
+            var sql1 = @"
+UPDATE PARTY_MEMBER 
+SET EXIT_FLAG = 1
+WHERE USER_ID = @USER_ID AND MESSAGE_KEY = @MESSAGE_KEY";
+
+            var sql2 = @"
+UPDATE PARTY_WAIT_MEMBER 
+SET EXIT_FLAG = 1
+WHERE USER_ID = @USER_ID AND MESSAGE_KEY = @MESSAGE_KEY";
+
+            var affected1 = await connection.ExecuteAsync(sql1,
                 new { MESSAGE_KEY = messageId, USER_ID = userId },
                 transaction: transaction);
 
-            return affectedRows > 0;
+            var affected2 = await connection.ExecuteAsync(sql2,
+                new { MESSAGE_KEY = messageId, USER_ID = userId },
+                transaction: transaction);
+
+            // 둘 중 하나라도 업데이트되면 성공
+            return (affected1 + affected2) > 0;
         }
         catch (Exception e)
         {
@@ -258,19 +267,21 @@ OR
     }
     public static async Task<bool> UpdateParty(ulong messageID)
     {
+        // 1. 먼저 파티 정보 조회 (트랜잭션 없이)
+        var partyEntity = await GetPartyEntity(messageID);
+
+        if (partyEntity == null)
+        {
+            Console.WriteLine($"{messageID} not found");
+            return false;
+        }
+
+        // 2. 이후 트랜잭션 시작
         var connection = await DatabaseController.GetConnectionAsync();
         await using var transaction = await connection.BeginTransactionAsync();
 
         try
         {
-            var partyEntity = await GetPartyEntity(messageID);
-
-            if (partyEntity == null)
-            {
-                Console.WriteLine($"{messageID} not found");
-                return false;
-            }
-
             if (partyEntity.WaitMembers.Count > 0 && partyEntity.Members.Count < partyEntity.MAX_COUNT_MEMBER)
             {
                 for (int i = 0; i < partyEntity.MAX_COUNT_MEMBER - partyEntity.Members.Count; i++)
@@ -317,12 +328,12 @@ OR
         {
             var sql = @"
 UPDATE PARTY
-SET IS_CLOSED = true
+SET IS_CLOSED = @isClose
 WHERE MESSAGE_KEY = @MESSAGE_KEY
     ";
             
             var affectedRows = await connection.ExecuteAsync(sql,
-                new { MESSAGE_KEY = messageId },
+                new { MESSAGE_KEY = messageId , isClose = isClose ? 1 : 0 },
                 transaction: transaction);
 
             return affectedRows > 0;

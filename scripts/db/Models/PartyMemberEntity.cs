@@ -5,10 +5,8 @@ namespace DiscodeBot.scripts.db.Models;
 /// </summary>
 public class PartyMemberEntity
 {
-    public ulong SEQ { get; set; }
     public ulong MESSAGE_KEY { get; set; }
     public ulong USER_ID { get; set; }
     public string USER_NICKNAME { get; set; }
-    public DateTime? CREATE_DATE { get; set; }
 }
 
