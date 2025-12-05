@@ -1,0 +1,35 @@
+# User-specific files
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Build results
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Rr]eleases/
+x64/
+x86/
+bld/
+[Bb]in/
+[Oo]bj/
+
+# Visual Studio cache/options
+.vs/
+.vscode/
+.idea/
+
+# Rider
+.idea/
+*.sln.iml
+*.DotSettings.user
+
+# Environment variables and secrets
+.env
+config.json
+test_config.json
+
+# Keep example files
+!config.example.json
+!.env.example
