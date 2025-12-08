@@ -1,13 +1,16 @@
 using System.Diagnostics;
 using System.Security.Cryptography;
-using DiscodeBot.scripts.db;
-using DiscodeBot.scripts.db.Models;
-using DiscodeBot.scripts.db.Repositories;
+using DiscordBot.scripts.db;
 using Discord;
 using Discord.Rest;
 using Discord.WebSocket;
+using Dapper;
+using DiscordBot.scripts._src.Partys;
+using DiscordBot.scripts.db.Models;
+using DiscordBot.scripts.db.Repositories;
+using DiscordBot.scripts.db.Services;
 
-namespace DiscodeBot.scripts._src;
+namespace DiscordBot.scripts._src;
 
 public class Controller
 {
@@ -16,7 +19,9 @@ public class Controller
     private const int MIN_COUNT = 1;
     private const int MAX_COUNT = 200;
     private const int MAX_HOUR = 168;
-    private const string VERSION = "1.1.0";
+    private const int MAX_NAME_COUNT = 50;
+    
+    private const string VERSION = "1.1.1";
 
     private const string JOIN_KEY = "참가";
     private const string LEAVE_KEY = "나가기";
@@ -27,10 +32,11 @@ public class Controller
     private const string OPTION_BUTTON_KEY = "button";
     private const string KICK_BUTTON_KEY = "kick";
     
+    private const string SETTING_MODEL_KEY = "setting";
+    
     private const string EXPIRE_KEY = "만료(영구)";
     private const string PING_KEY = "호출(파티원)";
-    private const string RENAME_KEY = "제목변경";
-    private const string RESIZE_KEY = "인원변경";
+    private const string PARTY_KEY = "파티설정";
     private const string KICK_KEY = "강퇴";
     
     private const string YES_BUTTON_KEY = "yes";
@@ -45,6 +51,7 @@ public class Controller
     {
         _client.SlashCommandExecuted += HandleSlashCommandAsync;
         _client.ButtonExecuted += HandleButtonAsync;
+        _client.ModalSubmitted += HandleModalAsync;
         _client.Ready += InitCommands;
         Cycle();
     }
@@ -65,7 +72,7 @@ public class Controller
             
             // 작업 실행
             Console.WriteLine($"[Cycle] 만료 파티 체크 시작 (시간: {DateTime.Now:HH:mm:ss})");
-            var partyList = await PartyRepository.CycleExpiredPartyList();
+            var partyList = await PartyService.CycleExpiredPartyListAsync();
             
             if (partyList.Count > 0)
             {
@@ -116,7 +123,7 @@ public class Controller
                 return;
             }
             
-            if (!await GuildRepository.GuildCheck(guildChannel.Id, guildChannel.Guild.Name))
+            if (!await GuildService.GuildCheckAsync(guildChannel.Id, guildChannel.Guild.Name))
             {
                 await command.RespondAsync("🚫 이 채널을 검증할 수 없거나 제한되었습니다.", ephemeral: true);
                 return;
@@ -156,7 +163,7 @@ public class Controller
                 
         var partyName = nameOption.Value.ToString()!;
         
-        if (await PartyRepository.IsPartyExistsAsync(partyName, (ulong)command.GuildId!))
+        if (await PartyService.IsPartyExistsAsync(partyName, (ulong)command.GuildId!))
         {
             await command.RespondAsync("해당 파티 이름이 이미 있습니다.", ephemeral: true);
             return;
@@ -206,12 +213,12 @@ public class Controller
             CHANNEL_KEY = (ulong)command.ChannelId!,
             OWNER_KEY = command.User.Id,
             OWNER_NICKNAME = command.User is SocketGuildUser user
-                ? string.IsNullOrEmpty(user.Nickname) ? user.Username : user.Nickname
+                ? user.DisplayName
                 : command.User.Username,
             EXPIRE_DATE = now.AddSeconds(-now.Second).AddMilliseconds(-now.Millisecond).Add(time),
         };
         
-        if (!await PartyRepository.CreatePartyAsync(party))
+        if (!await PartyService.CreatePartyAsync(party))
         {
             await message.DeleteAsync();
             await command.FollowupAsync("파티 생성에 실패하였습니다.", ephemeral: true);
@@ -256,102 +263,64 @@ public class Controller
         var isAllMessage = false;
         var message = "알 수 없는 오류가 나타났습니다.";
 
-        var party = await PartyRepository.GetPartyEntity(messageId);
+        var partyEntity = await PartyService.GetPartyEntityAsync(messageId);
+        var partyClass = new PartyClass();
+        var error = partyClass.Init(partyEntity, component);
+        var party = partyClass.Entity;
         
-        // // 파티 정보 가져오기
-        if (party == null)  
+        if (error is not "")
         {
-            await component.RespondAsync("파티를 찾을 수 없습니다.", ephemeral: true);
+            await component.RespondAsync(error, ephemeral: true);
             return;
         }
-
-        var userId = component.User.Id;
-        var isOwner = party.OWNER_KEY == userId;
-        if (component.User is not SocketGuildUser guildUser)
-        {
-            return;
-        }
-        
-        var isAdmin = guildUser.GuildPermissions is { Administrator: true };
-        var isWater = party.WaitMembers.Any(x => x.USER_ID == userId);
-        var isPartyMember = party.Members.Any(x => x.USER_ID == userId);
-        var isNone = !isAdmin && !isWater && !isPartyMember && !isOwner;
-        
-        var userNickname = string.IsNullOrEmpty(guildUser.Nickname) ? guildUser.Username : guildUser.Nickname;
-        
-        
-        var userRoleString = "일반";
-
-        if (isWater)
-            userRoleString = "대기자";
-        if (isPartyMember)
-            userRoleString = "파티원";
-        if (isAdmin)
-            userRoleString = "관리자";
-        if (isOwner)
-            userRoleString = "파티장";
-
-        userRoleString += $"({userNickname})";
         
         switch (action)
         {
-            // 이미 참가했는지 확인
-            case JOIN_KEY when await PartyRepository.ExistsUser(party.MESSAGE_KEY, guildUser.Id):
-                await component.RespondAsync("이미 파티에 참가하셨습니다.", ephemeral: true);
-                return;
-            // 인원 초과 확인
-            case JOIN_KEY when party.Members.Count >= party.MAX_COUNT_MEMBER:
-                if (await PartyRepository.AddUser(party.MESSAGE_KEY, guildUser.Id, userNickname, true))
-                {
-                    message = "파티 인원이 가득 찼습니다. 대기 인원으로 등록되었습니다.";
-                    party.WaitMembers.Add(new PartyMemberEntity
-                    {
-                        USER_ID = userId,
-                        MESSAGE_KEY = messageId,
-                        USER_NICKNAME = userNickname
-                    });
-                }
-                else
-                {
-                    message = "파티에 들어갈 수 없었습니다! 다시 시도해주세요.";
-                }
-                break;
-            // 참가자 추가
             case JOIN_KEY:
-                if (await PartyRepository.AddUser(party.MESSAGE_KEY, guildUser.Id, userNickname, false))
+                // 파티 가득 찼는지 확인
+                var isFull = party.Members.Count >= party.MAX_COUNT_MEMBER;
+                
+                // Service에서 중복 체크 포함하여 처리
+                if (await PartyService.JoinPartyAsync(messageId, partyClass.guildUser.Id, partyClass.userNickname, isFull))
                 {
-                    message = $"✅ {party.DISPLAY_NAME} 파티에 참가했습니다!";
-                    party.Members.Add(new PartyMemberEntity
+                    if (isFull)
                     {
-                        USER_ID = userId,
-                        MESSAGE_KEY = messageId,
-                        USER_NICKNAME = userNickname
-                    });
+                        message = "파티 인원이 가득 찼습니다. 대기 인원으로 등록되었습니다.";
+                    }
+                    else
+                    {
+                        message = $"✅ {party.DISPLAY_NAME} 파티에 참가했습니다!";
+                    }
+                    
+                    // 파티 정보 갱신
+                    party.Members = await PartyService.GetPartyMemberListAsync(messageId);
+                    party.WaitMembers = await PartyService.GetPartyWaitMemberListAsync(messageId);
                 }
                 else
                 {
-                    message = "파티에 들어갈 수 없었습니다! 다시 시도해주세요.";
+                    // 실패 (이미 참가했거나 오류)
+                    await component.RespondAsync("파티에 참가할 수 없습니다. (이미 참가했거나 오류 발생)", ephemeral: true);
+                    return;
                 }
                 break;
-            // 참가 여부 확인
-            case LEAVE_KEY when !await PartyRepository.ExistsUser(party.MESSAGE_KEY, guildUser.Id):
-                await component.RespondAsync("파티에 참가하지 않았습니다.", ephemeral: true);
-                return;
-            // 참가자 제거
+                
             case LEAVE_KEY:
-                if (await PartyRepository.RemoveUser(messageId, userId) && await PartyRepository.UpdateParty(messageId))
+                if (await PartyService.LeavePartyAsync(messageId, partyClass.userId))
                 {
                     message = $"❌ {party.DISPLAY_NAME} 파티에서 나갔습니다.";
-                    party.Members = await PartyRepository.GetPartyMemberList(messageId);
-                    party.WaitMembers = await PartyRepository.GetPartyWaitMemberList(messageId);
+                    
+                    // 파티 정보 갱신
+                    party.Members = await PartyService.GetPartyMemberListAsync(messageId);
+                    party.WaitMembers = await PartyService.GetPartyWaitMemberListAsync(messageId);
                 }
                 else
                 {
-                    message = $"파티에서 나가기에 실패하엿습니다. 다시 시도해주세요.";
+                    await component.RespondAsync("파티에 참가하지 않았거나 나가기에 실패했습니다.", ephemeral: true);
+                    return;
                 }
                 break;
             case OPTION_KEY:
-                if (isNone)
+                if (partyClass.isNone)
                 {
                     await component.RespondAsync("권한이 없어 표시할 기능이 없습니다.", ephemeral: true);
                     await RespondMessageWithExpire(component, time: 5);
@@ -366,14 +335,15 @@ public class Controller
                 if (party.Members.Count >= 1)
                 {
                     componentBuilder.WithButton(PING_KEY, $"party_{OPTION_BUTTON_KEY}_{messageId}_{PING_KEY}", ButtonStyle.Success);
-                    // componentBuilder.WithButton(TP_KEY, $"party_{OPTION_BUTTON_KEY}_{messageId}_{TP_KEY}", ButtonStyle.Success);
+                    if (partyClass.isAdmin || partyClass.isOwner)
+                    {
+                        componentBuilder.WithButton(KICK_KEY,$"party_{OPTION_BUTTON_KEY}_{messageId}_{KICK_KEY}", ButtonStyle.Success);
+                    }
                 }
 
-                if (isAdmin || isOwner)
+                if (partyClass.isAdmin || partyClass.isOwner)
                 {
-                    // componentBuilder.WithButton(RENAME_KEY,$"party_{OPTION_BUTTON_KEY}_{messageId}_{RENAME_KEY}", ButtonStyle.Success);
-                    // componentBuilder.WithButton(RESIZE_KEY,$"party_{OPTION_BUTTON_KEY}_{messageId}_{RESIZE_KEY}", ButtonStyle.Success);
-                    componentBuilder.WithButton(KICK_KEY,$"party_{OPTION_BUTTON_KEY}_{messageId}_{KICK_KEY}", ButtonStyle.Success);
+                    componentBuilder.WithButton(PARTY_KEY,$"party_{OPTION_BUTTON_KEY}_{messageId}_{PARTY_KEY}", ButtonStyle.Primary);
                 }
                 
                 componentBuilder.WithButton(party.IS_CLOSED ? "재개" : CLOSE_KEY, $"party_{OPTION_BUTTON_KEY}_{messageId}_{CLOSE_KEY}", party.IS_CLOSED ? ButtonStyle.Success : ButtonStyle.Danger);
@@ -389,13 +359,16 @@ public class Controller
                 await RespondMessageWithExpire(component, time: 30);
                 return;
             case OPTION_BUTTON_KEY:
-                
-                // 옵션 메시지를 업데이트로 제거
-                await component.UpdateAsync(msg =>
+
+                if (parts[3] != PARTY_KEY)
                 {
-                    msg.Content = "처리 중...";
-                    msg.Components = null;
-                });
+                    // 옵션 메시지를 업데이트로 제거
+                    await component.UpdateAsync(msg =>
+                    {
+                        msg.Content = "처리 중...";
+                        msg.Components = null;
+                    });
+                }
                 
                 switch (parts[3])
                 {
@@ -403,7 +376,7 @@ public class Controller
                         var closed = party.IS_CLOSED;
                         var e = party.IS_CLOSED ? "오픈" : "마감";
                         
-                        if (!isOwner && !isAdmin)
+                        if (partyClass is { isOwner: false, isAdmin: false })
                         {
                             await component.ModifyOriginalResponseAsync(msg =>
                             {
@@ -414,7 +387,7 @@ public class Controller
                             return;
                         }
                         
-                        if (!await PartyRepository.SetPartyClose(messageId, !closed))
+                        if (!await PartyService.SetPartyCloseAsync(messageId, !closed))
                         {
                             await component.ModifyOriginalResponseAsync(msg =>
                             {
@@ -435,11 +408,11 @@ public class Controller
                         
 
                         party.IS_CLOSED = !closed;
-                        message = $"{userRoleString}님이 {party.DISPLAY_NAME} 파티를 {e}하였습니다.";
+                        message = $"{partyClass.userRoleString}님이 {party.DISPLAY_NAME} 파티를 {e}하였습니다.";
                         isAllMessage = true;
                         break;
                     case PING_KEY:
-                        if (!isOwner && !isAdmin && !isPartyMember)
+                        if (!partyClass.isOwner && !partyClass.isAdmin && !partyClass.isPartyMember)
                         {
                             await component.ModifyOriginalResponseAsync(msg =>
                             {
@@ -461,11 +434,11 @@ public class Controller
                         // 파티원 전체 멘션
                         var mentions = string.Join(" ", party.Members.Select(m => $"<@{m.USER_ID}>"));
                         isAllMessage = true;
-                        message = $"🔔 {userRoleString}님이 파티원을 호출하였습니다!\n{mentions}";
+                        message = $"🔔 {partyClass.userRoleString}님이 파티원을 호출하였습니다!\n{mentions}";
                         break;
                     case EXPIRE_KEY:
                         // 권한 확인: 파티장 또는 관리자만
-                        if (!isOwner && !isAdmin)
+                        if (!partyClass.isOwner && !partyClass.isAdmin)
                         {
                             await component.ModifyOriginalResponseAsync(msg =>
                             {
@@ -489,12 +462,27 @@ public class Controller
                         });
                         _ = RespondMessageWithExpire(component, time: 30);
                         return;
-                    case RENAME_KEY:
-                        
-                        
-                        return;
-                    case RESIZE_KEY:
-                        
+                    case PARTY_KEY:
+                        // Modal로 인원 수 입력받기
+                        var renameModal = new ModalBuilder()
+                            .WithTitle("파티 설정 변경")
+                            .WithCustomId($"party_{SETTING_MODEL_KEY}_{messageId}")
+                            .AddTextInput("이름", "name", TextInputStyle.Short, 
+                                placeholder: $"여기에 이름 입력", 
+                                required: true,
+                                value: party.DISPLAY_NAME,
+                                minLength: 1,
+                                maxLength: MAX_NAME_COUNT)
+                            .AddTextInput("새로운 인원 수", "count", TextInputStyle.Short, 
+                                placeholder: $"{1}-{MAX_COUNT}", 
+                                required: true,
+                                value: party.MAX_COUNT_MEMBER.ToString(),
+                                minLength: 1,
+                                maxLength: 3)
+                            .Build();
+
+                        // await component.DeleteOriginalResponseAsync();
+                        await component.RespondWithModalAsync(renameModal);
                         return;
                     case KICK_KEY:
                         var builder = new ComponentBuilder();
@@ -534,7 +522,7 @@ public class Controller
                         });
                         
                         _ = RespondMessageWithExpire(component);
-                        message = $"❌ {userRoleString}님이 파티를 만료시켰습니다.";
+                        message = $"❌ {partyClass.userRoleString}님이 파티를 만료시켰습니다.";
                         isAllMessage = true;
                     }
                     else
@@ -561,16 +549,32 @@ public class Controller
                 }
                 break;
             case KICK_BUTTON_KEY:
-                await component.RespondAsync("처리 중....", ephemeral: true);
+                await component.DeferAsync();
                 
                 var id = parts[3];
+                var targetUserId = ulong.Parse(id);
                 var result = "";
                 
-                if (await PartyRepository.RemoveUser(party.MESSAGE_KEY, ulong.Parse(id)) && await PartyRepository.UpdateParty(party.MESSAGE_KEY))
+                if (await PartyService.KickMemberAsync(messageId, targetUserId))
                 {
-                    result = $"{id} 님을 추방하였습니다.";
-                    party.Members = await PartyRepository.GetPartyMemberList(messageId);
-                    party.WaitMembers = await PartyRepository.GetPartyWaitMemberList(messageId); 
+                    var user = _client.GetGuild(party.GUILD_KEY).GetUser(targetUserId);
+
+                    if (user is IGuildUser guildUser)
+                    {
+                        result = $"{guildUser.DisplayName} 님을 추방하였습니다.";
+                    }
+                    else if (user != null)
+                    {
+                        result = $"{user.GlobalName ?? user.Username} 님을 추방하였습니다.";
+                    }
+                    else
+                    {
+                        result = "해당 유저를 추방하였습니다.";
+                    }
+                    
+                    // 파티 정보 갱신
+                    party.Members = await PartyService.GetPartyMemberListAsync(messageId);
+                    party.WaitMembers = await PartyService.GetPartyWaitMemberListAsync(messageId);
                 }
                 else
                 {
@@ -580,20 +584,36 @@ public class Controller
                 await component.ModifyOriginalResponseAsync(msg =>
                 {
                     msg.Content = result;
+                    msg.Components = null;
                 });
                 _ = RespondMessageWithExpire(component, time: 30);
-                break;
+                await UpdateMessage(component, party, isAllMessage, message);
+                return;
         }
         
+        await UpdateMessage(component, party, isAllMessage, message);
+        await RespondMessageWithExpire(component, message: message);
+    }
+
+    private async Task UpdateMessage(SocketInteraction component, PartyEntity party, bool isAllMessage, string message)
+    {
         // 임베드 메시지 업데이트
         var updatedEmbed = UpdatedEmbed(party);
         var updatedComponent = UpdatedComponent(party);
         
         var originalMessage = await component.Channel.GetMessageAsync(party.MESSAGE_KEY) as IUserMessage;
-        
+        if (originalMessage == null)
+        {
+            if (await _client.GetChannelAsync(party.CHANNEL_KEY) is IMessageChannel cl)
+            {
+                originalMessage = await cl.GetMessageAsync(party.MESSAGE_KEY) as IUserMessage;
+            }
+        }
+
         // 원본 메시지 수정
         if (originalMessage != null)
         {
+            
             await originalMessage.ModifyAsync(msg =>
             {
                 msg.Embed = updatedEmbed;
@@ -608,19 +628,101 @@ public class Controller
                 }
                 await originalMessage.ReplyAsync(message);
             }
-            else
-            {
-                await RespondMessageWithExpire(component, message);
-            }
         }
         else
         {
             await component.Channel.SendMessageAsync($"{party.DISPLAY_NAME} 파티에 대한 원본 메세지를 찾을 수 없습니다. 파티를 해산합니다.");
-            await PartyRepository.ExpiredParty(party.MESSAGE_KEY);
+            await PartyService.ExpirePartyAsync(party.MESSAGE_KEY);
         }
     }
 
-    private static async Task RespondMessageWithExpire(SocketInteraction component, string? message = null, int time = 10)
+    private async Task HandleModalAsync(SocketModal modal)
+    {
+        var customId = modal.Data.CustomId;
+        
+        var parts = customId.Split('_');
+        if (parts[0] != "party")
+            return;
+        
+        if (!ulong.TryParse(parts[2], out var messageId))
+            return;
+
+        var partyEntity = await PartyService.GetPartyEntityAsync(messageId);
+
+        var partyClass = new PartyClass();
+        partyClass.Init(partyEntity, modal);
+        var party = partyClass.Entity;
+
+        var message = "";
+
+        switch (parts[1])
+        {
+            case SETTING_MODEL_KEY:
+                await modal.RespondAsync("작업 중....", ephemeral: true);
+                
+                // 입력값 가져오기
+                var countInput = modal.Data.Components.FirstOrDefault(c => c.CustomId == "count");
+                int newCount = party.MAX_COUNT_MEMBER;
+                if (countInput == null || !int.TryParse(countInput.Value, out newCount))
+                {
+                    message += $"인원 오류: 유호한 숫자를 입력해주세요.\n";
+                }
+
+                if (party.MAX_COUNT_MEMBER != newCount)
+                {
+                    // 범위 체크
+                    if (newCount < 0 || newCount > MAX_COUNT)
+                    {
+                        message += $"인원 오류: 파티 인원은 {1}~{MAX_COUNT} 사이여야 합니다.\n";
+                    }
+
+                    if (partyClass is { isOwner: false, isAdmin: false })
+                    {
+                        message += $"인원 오류: 파티장 또는 관리자만 인원을 변경할 수 있습니다.\n";
+                    }
+
+                    var (members, waitMember) = await PartyService.ResizePartyAsync(messageId, newCount);
+
+                    party.Members = members;
+                    party.WaitMembers = waitMember;
+                    party.MAX_COUNT_MEMBER = newCount;
+                    message += $"인원: 인원을 변경하였습니다.\n";
+                }
+                
+                var nameInput = modal.Data.Components.FirstOrDefault(c => c.CustomId == "name");
+                var name = nameInput?.Value ?? "";
+                if (string.IsNullOrEmpty(name))
+                {
+                    break;
+                }
+
+                if (name != party.DISPLAY_NAME)
+                {
+                    if (await PartyService.PartyRename(messageId, name))
+                    {
+                        message += "제목: 제목을 변경하였습니다.\n";
+                        party.DISPLAY_NAME = name;
+                    }
+                    else
+                    {
+                        message += "제목 오류: 제목을 변경할 수 없었습니다.\n";
+                    }
+                }
+
+                break;
+        }
+
+        if (message == "")
+        {
+            message = "설정이 취소되었습니다.";
+        }
+        await modal.ModifyOriginalResponseAsync(m => m.Content = message);
+        _ = RespondMessageWithExpire(modal);
+        
+        await UpdateMessage(modal, party, false, "");
+    }
+
+    private static async Task RespondMessageWithExpire(SocketInteraction component, int time = 10, string? message = null)
     {
         var separator = "\u200B"; // Zero-Width Space
         var exMessage = $"{separator} (해당 메세지는 {time}초 후 삭제됩니다.)";
@@ -680,7 +782,7 @@ public class Controller
             new SlashCommandBuilder()
                 .WithName("파티")
                 .WithDescription($"파티를 생성합니다. 허용 인원은 {MIN_COUNT}-{MAX_COUNT} 입니다.")
-                .AddOption("이름", ApplicationCommandOptionType.String, "파티 이름", isRequired: true)
+                .AddOption("이름", ApplicationCommandOptionType.String, "파티 이름", isRequired: true, minLength: 1, maxLength: MAX_NAME_COUNT)
                 .AddOption("인원", ApplicationCommandOptionType.Integer, "파티 인원", isRequired: true)
                 // .AddOption("호출", ApplicationCommandOptionType.Role, "해당 역할 소유자에게 알람을 보냅니다", isRequired: false)
                 .AddOption("만료시간", ApplicationCommandOptionType.String, $"파티 만료 시간 ex(15m, 15h, 15분, 15시) 빈 필드: {MAX_HOUR}시간", isRequired: false)
@@ -819,7 +921,7 @@ public class Controller
 
         if (channel == null) return false;
         
-        var result = await PartyRepository.ExpiredParty(party.MESSAGE_KEY);
+        var result = await PartyService.ExpirePartyAsync(party.MESSAGE_KEY);
 
         if (!result) return false;
         

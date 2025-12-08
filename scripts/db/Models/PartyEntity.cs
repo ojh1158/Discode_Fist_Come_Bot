@@ -1,4 +1,4 @@
-namespace DiscodeBot.scripts.db.Models;
+namespace DiscordBot.scripts.db.Models;
 
 /// <summary>
 /// PARTY 테이블 엔티티

@@ -1,26 +1,22 @@
 using MySqlConnector;
-using DiscodeBot.scripts.db.Models;
-using DiscodeBot.scripts._src;
+using DiscordBot.scripts._src;
 using Dapper;
+using DiscordBot.scripts.db.Models;
 
-namespace DiscodeBot.scripts.db.Repositories;
+namespace DiscordBot.scripts.db.Repositories;
 
 /// <summary>
-/// 실제 DB 구조에 맞춘 파티 Repository
+/// 실제 DB 구조에 맞춘 파티 Repository (Data Access Layer)
+/// 순수 DB CRUD 작업만 담당
 /// </summary>
 public class PartyRepository
 {
     /// <summary>
-    /// 파티를 생성합니다.
+    /// 파티를 생성합니다. (순수 INSERT만)
     /// </summary>
     /// <returns>생성 성공 시 true, 실패 시 false</returns>
-    public static async Task<bool> CreatePartyAsync(
-        PartyEntity party)
+    public static async Task<bool> CreatePartyAsync(PartyEntity party, MySqlConnection connection, MySqlTransaction transaction)
     {
-        if (await ExpiredParty(party.MESSAGE_KEY))
-        {
-            return false;
-        }
 
         try
         {
@@ -28,9 +24,7 @@ public class PartyRepository
 INSERT INTO PARTY (DISPLAY_NAME, MAX_COUNT_MEMBER, MESSAGE_KEY, GUILD_KEY, CHANNEL_KEY, OWNER_KEY, OWNER_NICKNAME, EXPIRE_DATE, IS_CLOSED)
 VALUES (@DISPLAY_NAME, @MAX_COUNT_MEMBER, @MESSAGE_KEY, @GUILD_KEY, @CHANNEL_KEY, @OWNER_KEY, @OWNER_NICKNAME, @EXPIRE_DATE, 0)
     ";
-            var connection = await DatabaseController.GetConnectionAsync();
-
-            var affectedRows = await connection.ExecuteAsync(sql, party);
+            var affectedRows = await connection.ExecuteAsync(sql, party, transaction: transaction);
             return affectedRows > 0;
         }
         catch (Exception ex)
@@ -40,12 +34,11 @@ VALUES (@DISPLAY_NAME, @MAX_COUNT_MEMBER, @MESSAGE_KEY, @GUILD_KEY, @CHANNEL_KEY
         }
     }
 
-    public static async Task<bool> IsPartyExistsAsync(string displayName, ulong guildId)
+    public static async Task<bool> IsPartyExistsAsync(string displayName, ulong guildId, MySqlConnection connection, MySqlTransaction transaction)
     {
         try
         {
-            var sql =
-                @"
+            var sql = @"
 SELECT EXISTS(
     SELECT 1
     FROM PARTY
@@ -54,25 +47,21 @@ SELECT EXISTS(
     AND IS_EXPIRED = FALSE
 )
 ";
-
-            var connection = await DatabaseController.GetConnectionAsync();
             return await connection.ExecuteScalarAsync<bool>(sql,
-                new { DisplayName = displayName, GuildKey = guildId });
+                new { DisplayName = displayName, GuildKey = guildId },
+                transaction: transaction);
         }
         catch (Exception e)
         {
-            Console.WriteLine($"파티 생성 실패: {e.Message}");
+            Console.WriteLine($"파티 존재 확인 실패: {e.Message}");
             return false;
         }
     }
 
-    // PartyRepository.cs에 추가할 메서드 예시
-    public static async Task<PartyEntity?> GetPartyEntity(ulong messageId)
+    public static async Task<PartyEntity?> GetPartyEntity(ulong messageId, MySqlConnection connection, MySqlTransaction transaction)
     {
         try
         {
-            var connection = await DatabaseController.GetConnectionAsync();
-
             // 1. 파티 기본 정보
             var party = await connection.QuerySingleOrDefaultAsync<PartyEntity>(
                 @"
@@ -81,16 +70,17 @@ FROM PARTY
 WHERE MESSAGE_KEY = @MessageId
 AND IS_EXPIRED = FALSE 
 ",
-                new { MessageId = messageId }
+                new { MessageId = messageId },
+                transaction: transaction
             );
 
             if (party == null) return null;
 
             // 2. 파티 멤버
-            party.Members = await GetPartyMemberList(messageId);
+            party.Members = await GetPartyMemberList(messageId, connection, transaction);
 
             // 3. 대기 멤버
-            party.WaitMembers = await GetPartyWaitMemberList(messageId);
+            party.WaitMembers = await GetPartyWaitMemberList(messageId, connection, transaction);
 
             return party;
         }
@@ -101,10 +91,8 @@ AND IS_EXPIRED = FALSE
         }
     }
 
-    public static async Task<List<PartyMemberEntity>> GetPartyMemberList(ulong messageId)
+    public static async Task<List<PartyMemberEntity>> GetPartyMemberList(ulong messageId, MySqlConnection connection, MySqlTransaction transaction)
     {
-        var connection = await DatabaseController.GetConnectionAsync();
-
         try
         {
             var result = await connection.QueryAsync<PartyMemberEntity>(
@@ -115,7 +103,8 @@ WHERE MESSAGE_KEY = @MessageId
  AND EXIT_FLAG = FALSE
 ORDER BY CREATE_DATE
 ",
-                new { MessageId = messageId });
+                new { MessageId = messageId },
+                transaction: transaction);
 
             return result.ToList();
         }
@@ -126,10 +115,8 @@ ORDER BY CREATE_DATE
         }
     }
 
-    public static async Task<List<PartyMemberEntity>> GetPartyWaitMemberList(ulong messageId)
+    public static async Task<List<PartyMemberEntity>> GetPartyWaitMemberList(ulong messageId, MySqlConnection connection, MySqlTransaction transaction)
     {
-        var connection = await DatabaseController.GetConnectionAsync();
-
         try
         {
             var result = await connection.QueryAsync<PartyMemberEntity>(
@@ -140,7 +127,8 @@ WHERE MESSAGE_KEY = @MessageId
 AND EXIT_FLAG = FALSE
 ORDER BY CREATE_DATE
 ",
-                new { MessageId = messageId });
+                new { MessageId = messageId },
+                transaction: transaction);
 
             return result.ToList();
         }
@@ -151,10 +139,8 @@ ORDER BY CREATE_DATE
         }
     }
 
-    public static async Task<bool> ExistsUser(ulong messageId, ulong userId)
+    public static async Task<bool> ExistsUser(ulong messageId, ulong userId, MySqlConnection connection, MySqlTransaction transaction)
     {
-        var connection = await DatabaseController.GetConnectionAsync();
-        
         try
         {
             var result = await connection.ExecuteScalarAsync<bool>(
@@ -174,7 +160,8 @@ SELECT EXISTS(
     LIMIT 1
     )
 ",
-                new { MESSAGE_KEY = messageId , USER_ID = userId });
+                new { MESSAGE_KEY = messageId , USER_ID = userId },
+                transaction: transaction);
 
             return result;
         }
@@ -185,9 +172,8 @@ SELECT EXISTS(
         }   
     }
 
-    public static async Task<bool> AddUser(ulong messageId, ulong userId, string userNickname, bool isWait, MySqlConnection? connection = null, MySqlTransaction? transaction = null)
+    public static async Task<bool> AddUser(ulong messageId, ulong userId, string userNickname, bool isWait, MySqlConnection connection, MySqlTransaction transaction)
     {
-        connection ??= await DatabaseController.GetConnectionAsync();
         
         try
         {
@@ -231,9 +217,8 @@ WHERE (
         }   
     }
 
-    public static async Task<bool> RemoveUser(ulong messageId, ulong userId, MySqlConnection? connection = null, MySqlTransaction? transaction = null)
+    public static async Task<bool> RemoveUser(ulong messageId, ulong userId, MySqlConnection connection, MySqlTransaction transaction)
     {
-        connection ??= await DatabaseController.GetConnectionAsync();
 
         try
         {
@@ -265,64 +250,69 @@ WHERE USER_ID = @USER_ID AND MESSAGE_KEY = @MESSAGE_KEY";
             return false;
         }
     }
-    public static async Task<bool> UpdateParty(ulong messageID)
+
+    public static async Task<bool> ExitAllUser(ulong messageId, MySqlConnection connection, MySqlTransaction transaction)
     {
-        // 1. 먼저 파티 정보 조회 (트랜잭션 없이)
-        var partyEntity = await GetPartyEntity(messageID);
-
-        if (partyEntity == null)
-        {
-            Console.WriteLine($"{messageID} not found");
-            return false;
-        }
-
-        // 2. 이후 트랜잭션 시작
-        var connection = await DatabaseController.GetConnectionAsync();
-        await using var transaction = await connection.BeginTransactionAsync();
-
+        
         try
         {
-            if (partyEntity.WaitMembers.Count > 0 && partyEntity.Members.Count < partyEntity.MAX_COUNT_MEMBER)
-            {
-                for (int i = 0; i < partyEntity.MAX_COUNT_MEMBER - partyEntity.Members.Count; i++)
-                {
-                    var waitMember = partyEntity.WaitMembers.FirstOrDefault();
-                    if (waitMember == null) continue;
+            // 두 개의 별도 UPDATE로 분리
+            var sql1 = @"
+UPDATE PARTY_MEMBER 
+SET EXIT_FLAG = 1
+WHERE MESSAGE_KEY = @MESSAGE_KEY";
 
-                    // 트랜잭션 내에서 실행
-                    var removeSuccess = await RemoveUser(messageID, waitMember.USER_ID, connection, transaction);
-                    if (!removeSuccess)
-                    {
-                        throw new Exception($"Failed to remove user {waitMember.USER_ID}");
-                    }
+            var sql2 = @"
+UPDATE PARTY_WAIT_MEMBER 
+SET EXIT_FLAG = 1
+WHERE MESSAGE_KEY = @MESSAGE_KEY";
 
-                    var addSuccess = await AddUser(messageID, waitMember.USER_ID, waitMember.USER_NICKNAME, false, connection, transaction);
-                    if (!addSuccess)
-                    {
-                        throw new Exception($"Failed to add user {waitMember.USER_ID}");
-                    }
+            var affected1 = await connection.ExecuteAsync(sql1,
+                new { MESSAGE_KEY = messageId },
+                transaction: transaction);
 
-                    partyEntity.WaitMembers.Remove(waitMember);
-                }
-            }
+            var affected2 = await connection.ExecuteAsync(sql2,
+                new { MESSAGE_KEY = messageId },
+                transaction: transaction);
 
-            // 모든 작업이 성공하면 커밋
-            await transaction.CommitAsync();
-
-            return true;
+            // 둘 중 하나라도 업데이트되면 성공
+            return (affected1 + affected2) > 0;
         }
         catch (Exception e)
         {
-            // 오류 발생 시 롤백
-            Console.WriteLine($"UpdateParty failed, rolling back: {e.Message}");
-            await transaction.RollbackAsync();
+            Console.WriteLine(e);
+            return false;
+        }
+    }
+    
+    /// <summary>
+    /// 파티 인원 수 업데이트 (순수 UPDATE만)
+    /// </summary>
+    public static async Task<bool> UpdatePartySize(ulong messageId, int newSize, MySqlConnection connection, MySqlTransaction transaction)
+    {
+
+        try
+        {
+            var sql = @"
+UPDATE PARTY
+SET MAX_COUNT_MEMBER = @MaxCount
+WHERE MESSAGE_KEY = @MessageKey
+";
+            var affectedRows = await connection.ExecuteAsync(sql,
+                new { MaxCount = newSize, MessageKey = messageId },
+                transaction: transaction);
+
+            return affectedRows > 0;
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine(e);
             return false;
         }
     }
 
-    public static async Task<bool> SetPartyClose(ulong messageId, bool isClose, MySqlConnection? connection = null, MySqlTransaction? transaction = null)
+    public static async Task<bool> SetPartyClose(ulong messageId, bool isClose, MySqlConnection connection, MySqlTransaction transaction)
     {
-        connection ??= await DatabaseController.GetConnectionAsync();
 
         try
         {
@@ -344,11 +334,34 @@ WHERE MESSAGE_KEY = @MESSAGE_KEY
             return false;
         }
     }
-
-    public static async Task<bool> ExpiredParty(ulong messageId)
+    
+    public static async Task<bool> PartyRename(ulong messageId, string newName, MySqlConnection connection, MySqlTransaction transaction)
     {
-        var connection = await DatabaseController.GetConnectionAsync();
-        
+
+        try
+        {
+            var sql = @"
+UPDATE PARTY
+SET DISPLAY_NAME= @name
+WHERE MESSAGE_KEY = @MESSAGE_KEY
+    ";
+            
+            var affectedRows = await connection.ExecuteAsync(sql,
+                new { MESSAGE_KEY = messageId , name = newName },
+                transaction: transaction);
+
+            return affectedRows > 0;
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine(e);
+            return false;
+        }
+    }
+
+
+    public static async Task<bool> ExpiredParty(ulong messageId, MySqlConnection connection, MySqlTransaction transaction)
+    {
         try
         {
             var affectedRows = await connection.ExecuteAsync(
@@ -357,7 +370,8 @@ UPDATE PARTY
 SET IS_EXPIRED = TRUE
 WHERE MESSAGE_KEY = @MESSAGE_KEY
 ",
-                new { MESSAGE_KEY = messageId });
+                new { MESSAGE_KEY = messageId },
+                transaction: transaction);
 
             return affectedRows > 0;
         }
@@ -369,12 +383,11 @@ WHERE MESSAGE_KEY = @MESSAGE_KEY
     }
 
 
-    public static async Task<List<PartyEntity>> CycleExpiredPartyList()
+
+    public static async Task<List<PartyEntity>> CycleExpiredPartyList(MySqlConnection connection, MySqlTransaction transaction)
     {
         try
         {
-            var connection = await DatabaseController.GetConnectionAsync();
-
             // 만료 시간이 지난 파티 목록 조회
             var parties = (await connection.QueryAsync<PartyEntity>(
                 @"
@@ -382,7 +395,8 @@ SELECT *
 FROM PARTY 
 WHERE IS_EXPIRED = FALSE
 AND EXPIRE_DATE <= NOW()
-")).ToList();
+",
+                transaction: transaction)).ToList();
 
             if (!parties.Any())
             {
@@ -395,6 +409,40 @@ AND EXPIRE_DATE <= NOW()
         {
             Console.WriteLine(e);
             return new List<PartyEntity>();
+        }
+    }
+
+    public static async Task<bool> RemoveAllUser(ulong messageId, MySqlConnection connection,
+        MySqlTransaction transaction)
+    {
+        try
+        {
+            var sql = @"
+UPDATE PARTY_MEMBER
+SET EXIT_FLAG = 1
+WHERE MESSAGE_KEY = @MessageKey
+            ";
+            
+            var sql2 = @"
+UPDATE PARTY_WAIT_MEMBER
+SET EXIT_FLAG = 1
+WHERE MESSAGE_KEY = @MessageKey
+            ";
+            
+            var a1 = await connection.ExecuteAsync(sql,
+                new { MessageKey = messageId },
+                transaction: transaction);
+            
+            var a2 = await connection.ExecuteAsync(sql2,
+                new { MessageKey = messageId },
+                transaction: transaction);
+
+            return a2 > 0 || a1 > 0;
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine(e);
+            return false;
         }
     }
 }

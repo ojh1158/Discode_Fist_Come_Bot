@@ -1,11 +1,11 @@
-using DiscodeBot.scripts._src;
-using DiscodeBot.scripts.db;
 using Discord;
 using Discord.WebSocket;
+using DiscordBot.scripts._src;
+using DiscordBot.scripts.db;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace DiscodeBot;
+namespace DiscordBot;
 
 class Program
 {

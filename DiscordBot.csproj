@@ -26,10 +26,6 @@
     </None>
   </ItemGroup>
 
-  <ItemGroup>
-    <Folder Include="scripts\db\" />
-  </ItemGroup>
-
 </Project>
 
 

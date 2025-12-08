@@ -2,7 +2,7 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.5.2.0
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DiscodeBot", "DiscodeBot.csproj", "{CCF0C93A-57B4-D34D-DD4D-4F0612E2A958}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DiscordBot", "DiscordBot.csproj", "{CCF0C93A-57B4-D34D-DD4D-4F0612E2A958}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

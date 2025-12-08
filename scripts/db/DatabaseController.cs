@@ -1,12 +1,15 @@
 using MySqlConnector;
 using System.Reflection;
 
-namespace DiscodeBot.scripts.db;
+namespace DiscordBot.scripts.db;
 
 public class DatabaseController : IDisposable
 {
     private static string _connectionString = string.Empty;
     private static MySqlConnection? _connection;
+
+    // 전역 DB Lock (모든 DB 접근을 순차적으로 제어)
+    private static readonly SemaphoreSlim _dbLock = new SemaphoreSlim(1, 1);
 
     public static void Init()
     {
@@ -14,7 +17,10 @@ public class DatabaseController : IDisposable
             ?? throw new InvalidOperationException("DATABASE__CONNECTIONSTRING 환경변수가 설정되지 않았습니다.");
     }
 
-    public static async Task<MySqlConnection> GetConnectionAsync()
+    /// <summary>
+    /// Connection 획득 (내부용, Lock 없음)
+    /// </summary>
+    private static async Task<MySqlConnection> GetConnectionAsync()
     {
         if (_connection == null || _connection.State != System.Data.ConnectionState.Open)
         {
@@ -22,6 +28,73 @@ public class DatabaseController : IDisposable
             await _connection.OpenAsync();
         }
         return _connection;
+    }
+    
+    /// <summary>
+    /// DB 작업을 Lock 내에서 실행 (반환값 있음)
+    /// Connection을 자동으로 제공하고 Lock 적용
+    /// </summary>
+    public static async Task<T> ExecuteAsync<T>(Func<MySqlConnection, Task<T>> action)
+    {
+        await _dbLock.WaitAsync();
+        try
+        {
+            var connection = await GetConnectionAsync();
+            return await action(connection);
+        }
+        finally
+        {
+            _dbLock.Release();
+        }
+    }
+    
+    /// <summary>
+    /// DB 작업을 Lock 내에서 실행 (반환값 없음)
+    /// Connection을 자동으로 제공하고 Lock 적용
+    /// </summary>
+    public static async Task ExecuteAsync(Func<MySqlConnection, Task> action)
+    {
+        await _dbLock.WaitAsync();
+        try
+        {
+            var connection = await GetConnectionAsync();
+            await action(connection);
+        }
+        finally
+        {
+            _dbLock.Release();
+        }
+    }
+    
+    /// <summary>
+    /// DB 작업을 트랜잭션 내에서 실행 (반환값 있음)
+    /// Connection과 Transaction을 자동으로 제공하고 Lock 적용
+    /// 성공 시 자동 Commit, 실패 시 자동 Rollback
+    /// </summary>
+    public static async Task<T> ExecuteInTransactionAsync<T>(Func<MySqlConnection, MySqlTransaction, Task<T>> action)
+    {
+        await _dbLock.WaitAsync();
+        try
+        {
+            var connection = await GetConnectionAsync();
+            await using var transaction = await connection.BeginTransactionAsync();
+            
+            try
+            {
+                var result = await action(connection, transaction);
+                await transaction.CommitAsync();
+                return result;
+            }
+            catch
+            {
+                await transaction.RollbackAsync();
+                throw;
+            }
+        }
+        finally
+        {
+            _dbLock.Release();
+        }
     }
 
     /// <summary>
