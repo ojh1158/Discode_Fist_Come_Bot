@@ -671,7 +671,7 @@ public class Controller
                 if (party.MAX_COUNT_MEMBER != newCount)
                 {
                     // 범위 체크
-                    if (newCount < 0 || newCount > MAX_COUNT)
+                    if (newCount < 1 || newCount > MAX_COUNT)
                     {
                         message += $"인원 오류: 파티 인원은 {1}~{MAX_COUNT} 사이여야 합니다.\n";
                     }
