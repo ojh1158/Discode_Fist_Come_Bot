@@ -1,5 +1,7 @@
 using MySqlConnector;
 using System.Reflection;
+using Dapper;
+using System.Data;
 
 namespace DiscordBot.scripts.db;
 
@@ -15,6 +17,40 @@ public class DatabaseController : IDisposable
     {
         _connectionString = Environment.GetEnvironmentVariable("DATABASE__CONNECTIONSTRING") 
             ?? throw new InvalidOperationException("DATABASE__CONNECTIONSTRING 환경변수가 설정되지 않았습니다.");
+        
+        // BINARY(16) <-> Guid 변환 핸들러 등록
+        SqlMapper.AddTypeHandler(new GuidBinaryHandler());
+    }
+    
+    /// <summary>
+    /// BINARY(16)과 Guid 간 변환을 처리하는 Dapper 타입 핸들러
+    /// </summary>
+    private class GuidBinaryHandler : SqlMapper.TypeHandler<Guid>
+    {
+        public override void SetValue(IDbDataParameter parameter, Guid value)
+        {
+            parameter.Value = value.ToByteArray();
+            parameter.DbType = DbType.Binary;
+        }
+
+        public override Guid Parse(object value)
+        {
+            if (value == null || value == DBNull.Value)
+            {
+                return Guid.Empty;
+            }
+            
+            if (value is byte[] bytes)
+            {
+                if (bytes.Length == 16)
+                {
+                    return new Guid(bytes);
+                }
+                throw new InvalidCastException($"Cannot convert byte array of length {bytes.Length} to Guid (expected 16 bytes)");
+            }
+            
+            throw new InvalidCastException($"Cannot convert {value.GetType()} to Guid");
+        }
     }
 
     /// <summary>
@@ -71,7 +107,7 @@ public class DatabaseController : IDisposable
     /// Connection과 Transaction을 자동으로 제공하고 Lock 적용
     /// 성공 시 자동 Commit, 실패 시 자동 Rollback
     /// </summary>
-    public static async Task<T> ExecuteInTransactionAsync<T>(Func<MySqlConnection, MySqlTransaction, Task<T>> action)
+    public static async Task<T?> ExecuteInTransactionAsync<T>(Func<MySqlConnection, MySqlTransaction, Task<T?>> action)
     {
         await _dbLock.WaitAsync();
         try
@@ -81,14 +117,15 @@ public class DatabaseController : IDisposable
             
             try
             {
-                var result = await action(connection, transaction);
+                var result = await action.Invoke(connection, transaction);
                 await transaction.CommitAsync();
                 return result;
             }
-            catch
+            catch (Exception ex)
             {
                 await transaction.RollbackAsync();
-                throw;
+                Console.WriteLine(ex.Message);
+                return default;
             }
         }
         finally
@@ -220,5 +257,24 @@ public class DatabaseController : IDisposable
     public static void DisposeDatabase()
     {
         _connection?.Dispose();
+    }
+    
+    public class QueryResult<T>
+    {
+        public T? Value;
+        public bool IsError;
+        public string? Error;
+
+        public void Result(Action<T> action, Action<string> error)
+        {
+            if (IsError && Value != null)
+            {
+                action.Invoke(Value);
+            }
+            else
+            {
+                error.Invoke(Error ?? string.Empty);
+            }
+        }
     }
 }

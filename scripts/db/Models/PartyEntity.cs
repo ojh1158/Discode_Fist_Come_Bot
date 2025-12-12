@@ -7,6 +7,7 @@ public class PartyEntity
 {
     public string DISPLAY_NAME { get; set; } = string.Empty;
     public int MAX_COUNT_MEMBER { get; set; } = 10;
+    public string PARTY_KEY { get; set; } = Guid.AllBitsSet.ToString();
     public ulong MESSAGE_KEY { get; set; }
     public ulong GUILD_KEY { get; set; }
     public ulong CHANNEL_KEY { get; set; }

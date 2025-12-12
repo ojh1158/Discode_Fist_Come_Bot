@@ -1,3 +1,4 @@
+using DiscordBot.scripts._src.Partys;
 using DiscordBot.scripts.db.Models;
 using DiscordBot.scripts.db.Repositories;
 using MySqlConnector;
@@ -19,18 +20,7 @@ public class PartyService
     {
         return DatabaseController.ExecuteInTransactionAsync(async (conn, trans) =>
         {
-            // 1. 같은 메시지 키로 기존 파티가 있다면 만료 처리
-            await PartyRepository.ExpiredParty(party.MESSAGE_KEY, conn, trans);
-
-            // 2. 새 파티 생성
-            var created = await PartyRepository.CreatePartyAsync(party, conn, trans);
-            
-            if (!created)
-            {
-                throw new Exception("파티 생성 실패");
-            }
-
-            return true;
+            return await PartyRepository.CreatePartyAsync(party, conn, trans);
         });
     }
     
@@ -38,28 +28,25 @@ public class PartyService
     /// 파티 참가
     /// 비즈니스 로직: 중복 체크 + 참가 + 대기열 승격
     /// </summary>
-    public static Task<bool> JoinPartyAsync(ulong messageId, ulong userId, string userNickname, bool isWait = false)
+    public static Task<JoinType> JoinPartyAsync(PartyEntity entity, ulong userId, string userNickname)
     {
         return DatabaseController.ExecuteInTransactionAsync(async (conn, trans) =>
         {
             // 1. 이미 참가했는지 체크
-            var exists = await PartyRepository.ExistsUser(messageId, userId, conn, trans);
+            var exists = await PartyRepository.ExistsUser(entity.PARTY_KEY, userId, conn, trans);
             if (exists)
             {
-                return false;
+                return JoinType.Exists;
             }
 
             // 2. 유저 추가
-            var added = await PartyRepository.AddUser(messageId, userId, userNickname, isWait, conn, trans);
-            if (!added)
+            var type = await PartyRepository.AddUser(entity.PARTY_KEY, userId, userNickname, conn, trans);
+            if (type == JoinType.Error)
             {
-                return false;
+                return JoinType.Error;
             }
-
-            // 3. 대기열 승격 처리
-            await PromoteWaitingMembersAsync(messageId, conn, trans);
             
-            return true;
+            return JoinType.Join;
         });
     }
     
@@ -67,24 +54,24 @@ public class PartyService
     /// 파티 나가기
     /// 비즈니스 로직: 나가기 + 대기열 승격
     /// </summary>
-    public static Task<bool> LeavePartyAsync(ulong messageId, ulong userId)
+    public static Task<bool> LeavePartyAsync(PartyEntity party, ulong userId)
     {
         return DatabaseController.ExecuteInTransactionAsync(async (conn, trans) =>
         {
-            if (!await PartyRepository.ExistsUser(messageId, userId, conn, trans))
+            if (!await PartyRepository.ExistsUser(party.PARTY_KEY, userId, conn, trans))
             {
                 return false;
             }
             
             // 1. 유저 제거
-            var removed = await PartyRepository.RemoveUser(messageId, userId, conn, trans);
+            var removed = await PartyRepository.RemoveUser(party.PARTY_KEY, userId, conn, trans);
             if (!removed)
             {
                 return false;
             }
 
             // 2. 대기열 승격 처리
-            await PromoteWaitingMembersAsync(messageId, conn, trans);
+            await PromoteWaitingMembersAsync(party, conn, trans);
 
             return true;
         });
@@ -94,23 +81,23 @@ public class PartyService
     /// 파티 인원 변경
     /// 비즈니스 로직: 인원 수 변경 + 증가 시 대기열 승격
     /// </summary>
-    public static Task<(List<PartyMemberEntity> members, List<PartyMemberEntity> waitMember)> ResizePartyAsync(ulong messageId, int newCount)
+    public static Task<(List<PartyMemberEntity> members, List<PartyMemberEntity> waitMember)> ResizePartyAsync(PartyEntity entity, int newCount)
     {
         return DatabaseController.ExecuteInTransactionAsync(async (conn, trans) =>
         {
             // 1. 인원 수 업데이트
-            var updated = await PartyRepository.UpdatePartySize(messageId, newCount, conn, trans);
+            var updated = await PartyRepository.UpdatePartySize(entity.MESSAGE_KEY, newCount, conn, trans);
             if (!updated)
             {
                 throw new Exception("인원 수 업데이트 실패");
             }
 
             // 2. 대기열 승격 처리 (인원이 증가한 경우)
-            await PromoteWaitingMembersAsync(messageId, conn, trans);
+            await PromoteWaitingMembersAsync(entity, conn, trans);
 
             // 같은 connection/transaction 사용하여 데드락 방지
-            var members = await PartyRepository.GetPartyMemberList(messageId, conn, trans);
-            var waitMembers = await PartyRepository.GetPartyWaitMemberList(messageId, conn, trans);
+            var members = await PartyRepository.GetPartyMemberList(entity.PARTY_KEY, conn, trans);
+            var waitMembers = await PartyRepository.GetPartyWaitMemberList(entity.PARTY_KEY, conn, trans);
 
             return (members, waitMembers);
         });
@@ -120,19 +107,19 @@ public class PartyService
     /// 파티 강퇴
     /// 비즈니스 로직: 강퇴 + 대기열 승격
     /// </summary>
-    public static Task<bool> KickMemberAsync(ulong messageId, ulong targetUserId)
+    public static Task<bool> KickMemberAsync(PartyEntity entity, ulong targetUserId)
     {
         return DatabaseController.ExecuteInTransactionAsync(async (conn, trans) =>
         {
             // 1. 유저 제거
-            var removed = await PartyRepository.RemoveUser(messageId, targetUserId, conn, trans);
+            var removed = await PartyRepository.RemoveUser(entity.PARTY_KEY, targetUserId, conn, trans);
             if (!removed)
             {
                 throw new Exception("유저 제거 실패");
             }
 
             // 2. 대기열 승격 처리
-            await PromoteWaitingMembersAsync(messageId, conn, trans);
+            await PromoteWaitingMembersAsync(entity, conn, trans);
 
             return true;
         });
@@ -160,11 +147,20 @@ public class PartyService
         });
     }
 
-    public static Task<bool> PartyRename(ulong messageId, string newName)
+    public static Task<bool> PartyRename(ulong messageKey, string newName)
     {
         return DatabaseController.ExecuteInTransactionAsync(async (conn, trans) =>
         {
-            return await PartyRepository.PartyRename(messageId, newName, conn, trans);
+            // await PartyRepository.GetPartyEntity(messageKey, conn, trans);
+            return await PartyRepository.PartyRename(messageKey, newName, conn, trans);
+        });
+    }
+    
+    public static Task<bool> ChangeMessageId(ulong messageId, ulong newid)
+    {
+        return DatabaseController.ExecuteInTransactionAsync(async (conn, trans) =>
+        {
+            return await PartyRepository.ChangeMessageId(messageId, newid, conn, trans);
         });
     }
     
@@ -173,33 +169,43 @@ public class PartyService
     /// <summary>
     /// 파티 정보 조회
     /// </summary>
-    public static Task<PartyEntity?> GetPartyEntityAsync(ulong messageId)
+    public static Task<PartyEntity?> GetPartyEntityAsync(ulong messageKey)
     {
         return DatabaseController.ExecuteInTransactionAsync(async (conn, trans) =>
         {
-            return await PartyRepository.GetPartyEntity(messageId, conn, trans);
+            var entity = await PartyRepository.GetPartyEntityNotMember(messageKey, conn, trans);
+
+            if (entity == null) return null;
+
+            // 2. 파티 멤버
+            entity.Members = await PartyRepository.GetPartyMemberList(entity.PARTY_KEY, conn, trans);
+
+            // 3. 대기 멤버
+            entity.WaitMembers = await PartyRepository.GetPartyWaitMemberList(entity.PARTY_KEY, conn, trans);
+            
+            return entity;
         });
     }
     
     /// <summary>
     /// 파티 멤버 리스트 조회
     /// </summary>
-    public static Task<List<PartyMemberEntity>> GetPartyMemberListAsync(ulong messageId)
+    public static Task<List<PartyMemberEntity>?> GetPartyMemberListAsync(string id)
     {
         return DatabaseController.ExecuteInTransactionAsync(async (conn, trans) =>
         {
-            return await PartyRepository.GetPartyMemberList(messageId, conn, trans);
+            return await PartyRepository.GetPartyMemberList(id, conn, trans);
         });
     }
     
     /// <summary>
     /// 대기 멤버 리스트 조회
     /// </summary>
-    public static Task<List<PartyMemberEntity>> GetPartyWaitMemberListAsync(ulong messageId)
+    public static Task<List<PartyMemberEntity>?> GetPartyWaitMemberListAsync(string id)
     {
         return DatabaseController.ExecuteInTransactionAsync(async (conn, trans) =>
         {
-            return await PartyRepository.GetPartyWaitMemberList(messageId, conn, trans);
+            return await PartyRepository.GetPartyWaitMemberList(id, conn, trans);
         });
     }
     
@@ -217,7 +223,7 @@ public class PartyService
     /// <summary>
     /// 만료된 파티 목록 조회
     /// </summary>
-    public static Task<List<PartyEntity>> CycleExpiredPartyListAsync()
+    public static Task<List<PartyEntity>?> CycleExpiredPartyListAsync()
     {
         return DatabaseController.ExecuteInTransactionAsync(async (conn, trans) =>
         {
@@ -229,63 +235,18 @@ public class PartyService
     /// 대기열 승격 처리 (비즈니스 로직)
     /// 파티에 빈 자리가 있고 대기 멤버가 있으면 자동 승격
     /// </summary>
-    private static async Task PromoteWaitingMembersAsync(ulong messageId, MySqlConnection connection,
+    private static async Task PromoteWaitingMembersAsync(PartyEntity entity, MySqlConnection connection,
         MySqlTransaction transaction)
     {
-        // 1. 파티 정보 조회
-        var party = await PartyRepository.GetPartyEntity(messageId, connection, transaction);
-        if (party == null) return;
-
-        await PartyRepository.RemoveAllUser(messageId, connection, transaction);
+        var partyAllMemberList = await PartyRepository.GetPartyAllMemberList(entity.PARTY_KEY, connection, transaction);
+        
+        await PartyRepository.RemoveAllUser(entity.PARTY_KEY, connection, transaction);
+        
             
-        var list = new List<PartyMemberEntity>();
-            
-        list.AddRange(party.Members);
-        list.AddRange(party.WaitMembers);
-            
-        for (var i = 0; i < list.Count; i++)
+        for (var i = 0; i < partyAllMemberList.Count; i++)
         {
-            await PartyRepository.AddUser(messageId, list[i].USER_ID, list[i].USER_NICKNAME, (i + 1) > party.MAX_COUNT_MEMBER, connection, transaction);
+            await PartyRepository.AddUser(entity.PARTY_KEY, partyAllMemberList[i].USER_ID, partyAllMemberList[i].USER_NICKNAME, connection, transaction);
         }
-
-        // // 2. 빈 자리가 있고 대기 멤버가 있으면
-        // if (party.WaitMembers.Count > 0 && party.Members.Count < party.MAX_COUNT_MEMBER)
-        // {
-        //     var availableSlots = party.MAX_COUNT_MEMBER - party.Members.Count;
-        //
-        //     for (int i = 0; i < availableSlots && i < party.WaitMembers.Count; i++)
-        //     {
-        //         var waitMember = party.WaitMembers[i];
-        //
-        //         // 대기열에서 제거
-        //         var removed = await PartyRepository.RemoveUser(messageId, waitMember.USER_ID, connection, transaction);
-        //         if (!removed)
-        //         {
-        //             throw new Exception($"Failed to remove waiting member {waitMember.USER_ID}");
-        //         }
-        //
-        //         // 파티에 추가
-        //         var added = await PartyRepository.AddUser(messageId, waitMember.USER_ID, waitMember.USER_NICKNAME, false, connection, transaction);
-        //         if (!added)
-        //         {
-        //             throw new Exception($"Failed to add member {waitMember.USER_ID}");
-        //         }
-        //     }
-        // }
-        // else if(party.Members.Count > party.MAX_COUNT_MEMBER)
-        // {
-        //     await PartyRepository.RemoveAllUser(messageId, connection, transaction);
-        //     
-        //     var list = new List<PartyMemberEntity>();
-        //     
-        //     list.AddRange(party.Members);
-        //     list.AddRange(party.WaitMembers);
-        //     
-        //     for (var i = 0; i < list.Count; i++)
-        //     {
-        //         await PartyRepository.AddUser(messageId, list[i].USER_ID, list[i].USER_NICKNAME, (i + 1) > party.MAX_COUNT_MEMBER, connection, transaction);
-        //     }
-        // }
     }
 }
 

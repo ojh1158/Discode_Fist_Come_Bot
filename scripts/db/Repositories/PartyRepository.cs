@@ -1,6 +1,7 @@
 using MySqlConnector;
 using DiscordBot.scripts._src;
 using Dapper;
+using DiscordBot.scripts._src.Partys;
 using DiscordBot.scripts.db.Models;
 
 namespace DiscordBot.scripts.db.Repositories;
@@ -17,21 +18,34 @@ public class PartyRepository
     /// <returns>생성 성공 시 true, 실패 시 false</returns>
     public static async Task<bool> CreatePartyAsync(PartyEntity party, MySqlConnection connection, MySqlTransaction transaction)
     {
-
-        try
+        // PARTY_KEY가 비어있거나 기본값이면 새로 생성
+        if (string.IsNullOrEmpty(party.PARTY_KEY) || party.PARTY_KEY == Guid.AllBitsSet.ToString())
         {
-            var sql = @"
-INSERT INTO PARTY (DISPLAY_NAME, MAX_COUNT_MEMBER, MESSAGE_KEY, GUILD_KEY, CHANNEL_KEY, OWNER_KEY, OWNER_NICKNAME, EXPIRE_DATE, IS_CLOSED)
-VALUES (@DISPLAY_NAME, @MAX_COUNT_MEMBER, @MESSAGE_KEY, @GUILD_KEY, @CHANNEL_KEY, @OWNER_KEY, @OWNER_NICKNAME, @EXPIRE_DATE, 0)
-    ";
-            var affectedRows = await connection.ExecuteAsync(sql, party, transaction: transaction);
-            return affectedRows > 0;
+            party.PARTY_KEY = Guid.NewGuid().ToString();
         }
-        catch (Exception ex)
+        
+        var partySql = @"
+INSERT INTO PARTY (DISPLAY_NAME, PARTY_KEY, MAX_COUNT_MEMBER, MESSAGE_KEY, GUILD_KEY, CHANNEL_KEY, OWNER_KEY, OWNER_NICKNAME, EXPIRE_DATE, IS_CLOSED)
+VALUES (@DISPLAY_NAME, @PARTY_KEY, @MAX_COUNT_MEMBER, @MESSAGE_KEY, @GUILD_KEY, @CHANNEL_KEY, @OWNER_KEY, @OWNER_NICKNAME, @EXPIRE_DATE, 0)
+";
+        
+        // 명시적으로 파라미터 전달하여 Dapper 매핑 문제 방지
+        var parameters = new
         {
-            Console.WriteLine($"파티 생성 실패: {ex.Message}");
-            return false;
-        }
+            party.DISPLAY_NAME,
+            party.PARTY_KEY,
+            party.MAX_COUNT_MEMBER,
+            party.MESSAGE_KEY,
+            party.GUILD_KEY,
+            party.CHANNEL_KEY,
+            party.OWNER_KEY,
+            party.OWNER_NICKNAME,
+            party.EXPIRE_DATE
+        };
+        
+        var affectedRows = await connection.ExecuteAsync(partySql, parameters, transaction: transaction);
+        
+        return affectedRows > 0;
     }
 
     public static async Task<bool> IsPartyExistsAsync(string displayName, ulong guildId, MySqlConnection connection, MySqlTransaction transaction)
@@ -58,29 +72,33 @@ SELECT EXISTS(
         }
     }
 
-    public static async Task<PartyEntity?> GetPartyEntity(ulong messageId, MySqlConnection connection, MySqlTransaction transaction)
+    public static async Task<PartyEntity?> GetPartyEntityNotMember(ulong messageKey, MySqlConnection connection, MySqlTransaction transaction)
     {
         try
         {
             // 1. 파티 기본 정보
+            // PARTY_KEY를 명시적으로 문자열로 변환하여 Dapper 매핑 문제 방지
             var party = await connection.QuerySingleOrDefaultAsync<PartyEntity>(
                 @"
-SELECT * 
+SELECT 
+    DISPLAY_NAME,
+    CAST(PARTY_KEY AS CHAR(36)) AS PARTY_KEY,
+    MAX_COUNT_MEMBER,
+    MESSAGE_KEY,
+    GUILD_KEY,
+    CHANNEL_KEY,
+    OWNER_KEY,
+    OWNER_NICKNAME,
+    EXPIRE_DATE,
+    IS_CLOSED,
+    IS_EXPIRED
 FROM PARTY 
-WHERE MESSAGE_KEY = @MessageId
-AND IS_EXPIRED = FALSE 
+WHERE MESSAGE_KEY = @MessageKey
+AND IS_EXPIRED = FALSE
 ",
-                new { MessageId = messageId },
+                new { MessageKey = messageKey },
                 transaction: transaction
             );
-
-            if (party == null) return null;
-
-            // 2. 파티 멤버
-            party.Members = await GetPartyMemberList(messageId, connection, transaction);
-
-            // 3. 대기 멤버
-            party.WaitMembers = await GetPartyWaitMemberList(messageId, connection, transaction);
 
             return party;
         }
@@ -91,7 +109,7 @@ AND IS_EXPIRED = FALSE
         }
     }
 
-    public static async Task<List<PartyMemberEntity>> GetPartyMemberList(ulong messageId, MySqlConnection connection, MySqlTransaction transaction)
+    public static async Task<List<PartyMemberEntity>> GetPartyMemberList(string id, MySqlConnection connection, MySqlTransaction transaction)
     {
         try
         {
@@ -99,11 +117,11 @@ AND IS_EXPIRED = FALSE
                 @"
 SELECT * 
 FROM PARTY_MEMBER 
-WHERE MESSAGE_KEY = @MessageId
+WHERE PARTY_KEY = @id
  AND EXIT_FLAG = FALSE
 ORDER BY CREATE_DATE
 ",
-                new { MessageId = messageId },
+                new { id },
                 transaction: transaction);
 
             return result.ToList();
@@ -115,7 +133,7 @@ ORDER BY CREATE_DATE
         }
     }
 
-    public static async Task<List<PartyMemberEntity>> GetPartyWaitMemberList(ulong messageId, MySqlConnection connection, MySqlTransaction transaction)
+    public static async Task<List<PartyMemberEntity>> GetPartyWaitMemberList(string id, MySqlConnection connection, MySqlTransaction transaction)
     {
         try
         {
@@ -123,11 +141,11 @@ ORDER BY CREATE_DATE
                 @"
 SELECT * 
 FROM PARTY_WAIT_MEMBER 
-WHERE MESSAGE_KEY = @MessageId
+WHERE PARTY_KEY = @id
 AND EXIT_FLAG = FALSE
 ORDER BY CREATE_DATE
 ",
-                new { MessageId = messageId },
+                new { id },
                 transaction: transaction);
 
             return result.ToList();
@@ -138,8 +156,18 @@ ORDER BY CREATE_DATE
             throw;
         }
     }
+    
+    public static async Task<List<PartyMemberEntity>> GetPartyAllMemberList(string id, MySqlConnection connection, MySqlTransaction transaction)
+    {
+        List<PartyMemberEntity> result = [];
+        
+        result.AddRange(await GetPartyMemberList(id, connection, transaction));
+        result.AddRange(await GetPartyWaitMemberList(id, connection, transaction));
+        
+        return result;
+    }
 
-    public static async Task<bool> ExistsUser(ulong messageId, ulong userId, MySqlConnection connection, MySqlTransaction transaction)
+    public static async Task<bool> ExistsUser(string id, ulong userId, MySqlConnection connection, MySqlTransaction transaction)
     {
         try
         {
@@ -148,19 +176,19 @@ ORDER BY CREATE_DATE
 SELECT EXISTS(
     SELECT 1
     FROM PARTY_MEMBER
-    WHERE MESSAGE_KEY = @MESSAGE_KEY
+    WHERE PARTY_KEY = @id
       AND USER_ID = @USER_ID
       AND EXIT_FLAG = false
     UNION ALL
     SELECT 1
     FROM PARTY_WAIT_MEMBER
-    WHERE MESSAGE_KEY = @MESSAGE_KEY
+    WHERE PARTY_KEY = @id
       AND USER_ID = @USER_ID
       AND EXIT_FLAG = false
     LIMIT 1
     )
 ",
-                new { MESSAGE_KEY = messageId , USER_ID = userId },
+                new { id , USER_ID = userId },
                 transaction: transaction);
 
             return result;
@@ -172,52 +200,54 @@ SELECT EXISTS(
         }   
     }
 
-    public static async Task<bool> AddUser(ulong messageId, ulong userId, string userNickname, bool isWait, MySqlConnection connection, MySqlTransaction transaction)
+    public static async Task<JoinType> AddUser(string id, ulong userId, string userNickname, MySqlConnection connection, MySqlTransaction transaction)
     {
-        
         try
         {
             string sql;
-            
-            if (isWait)
-            {
-                // 대기 멤버는 제한 없이 추가
-                sql = @"
-INSERT INTO PARTY_WAIT_MEMBER (MESSAGE_KEY, USER_ID, USER_NICKNAME) 
-VALUES (@MESSAGE_KEY, @USER_ID, @USER_NICKNAME)";
-            }
-            else
-            {
                 // 파티 멤버는 MAX_COUNT_MEMBER 체크 후 추가
                 sql = @"
-INSERT INTO PARTY_MEMBER (MESSAGE_KEY, USER_ID, USER_NICKNAME)
-SELECT @MESSAGE_KEY, @USER_ID, @USER_NICKNAME
+INSERT INTO PARTY_MEMBER (PARTY_KEY, USER_ID, USER_NICKNAME)
+SELECT @id, @userId, @userNickname
 WHERE (
     SELECT COUNT(*) 
     FROM PARTY_MEMBER 
-    WHERE MESSAGE_KEY = @MESSAGE_KEY
+    WHERE PARTY_KEY = @id
     AND EXIT_FLAG = FALSE
 ) < (
     SELECT MAX_COUNT_MEMBER 
     FROM PARTY 
-    WHERE MESSAGE_KEY = @MESSAGE_KEY
+    WHERE PARTY_KEY = @id
 )";
-            }
-            
+                
             var affectedRows = await connection.ExecuteAsync(sql,
-                new { MESSAGE_KEY = messageId, USER_ID = userId, USER_NICKNAME = userNickname },
+                new { id, userId, userNickname },
                 transaction: transaction);
+            
+            if (affectedRows == 0)
+            {
+                // 대기 멤버는 제한 없이 추가
+                sql = @"
+INSERT INTO PARTY_WAIT_MEMBER (PARTY_KEY, USER_ID, USER_NICKNAME) 
+VALUES (@id, @userId, @userNickname)";
+                
+                affectedRows = await connection.ExecuteAsync(sql,
+                    new { id, userId, userNickname },
+                    transaction: transaction);
+                
+                return affectedRows == 0 ? JoinType.Error : JoinType.Wait;
+            }
 
-            return affectedRows > 0;
+            return JoinType.Join;
         }
         catch (Exception e)
         {
             Console.WriteLine(e);
-            return false;
+            return JoinType.Error;
         }   
     }
 
-    public static async Task<bool> RemoveUser(ulong messageId, ulong userId, MySqlConnection connection, MySqlTransaction transaction)
+    public static async Task<bool> RemoveUser(string id, ulong userId, MySqlConnection connection, MySqlTransaction transaction)
     {
 
         try
@@ -226,19 +256,19 @@ WHERE (
             var sql1 = @"
 UPDATE PARTY_MEMBER 
 SET EXIT_FLAG = 1
-WHERE USER_ID = @USER_ID AND MESSAGE_KEY = @MESSAGE_KEY";
+WHERE USER_ID = @USER_ID AND PARTY_KEY = @id";
 
             var sql2 = @"
 UPDATE PARTY_WAIT_MEMBER 
 SET EXIT_FLAG = 1
-WHERE USER_ID = @USER_ID AND MESSAGE_KEY = @MESSAGE_KEY";
+WHERE USER_ID = @USER_ID AND PARTY_KEY = @id";
 
             var affected1 = await connection.ExecuteAsync(sql1,
-                new { MESSAGE_KEY = messageId, USER_ID = userId },
+                new { id, USER_ID = userId },
                 transaction: transaction);
 
             var affected2 = await connection.ExecuteAsync(sql2,
-                new { MESSAGE_KEY = messageId, USER_ID = userId },
+                new { id, USER_ID = userId },
                 transaction: transaction);
 
             // 둘 중 하나라도 업데이트되면 성공
@@ -251,28 +281,52 @@ WHERE USER_ID = @USER_ID AND MESSAGE_KEY = @MESSAGE_KEY";
         }
     }
 
-    public static async Task<bool> ExitAllUser(ulong messageId, MySqlConnection connection, MySqlTransaction transaction)
+    public static async Task<bool> ChangeMessageId(ulong messageId, ulong newMessageId, MySqlConnection connection, MySqlTransaction transaction)
     {
-        
+        try
+        {
+            // 두 개의 별도 UPDATE로 분리
+            var sql1 = @"
+UPDATE PARTY
+SET MESSAGE_KEY = @NEW
+WHERE MESSAGE_KEY = @MESSAGE_KEY
+";
+
+            var affected1 = await connection.ExecuteAsync(sql1,
+                new { MESSAGE_KEY = messageId , NEW = newMessageId },
+                transaction: transaction);
+
+            // 둘 중 하나라도 업데이트되면 성공
+            return affected1 > 0;
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine(e);
+            return false;
+        }
+    }
+
+    public static async Task<bool> ExitAllUser(Guid id, MySqlConnection connection, MySqlTransaction transaction)
+    {
         try
         {
             // 두 개의 별도 UPDATE로 분리
             var sql1 = @"
 UPDATE PARTY_MEMBER 
 SET EXIT_FLAG = 1
-WHERE MESSAGE_KEY = @MESSAGE_KEY";
+WHERE PARTY_KEY = @id";
 
             var sql2 = @"
 UPDATE PARTY_WAIT_MEMBER 
 SET EXIT_FLAG = 1
-WHERE MESSAGE_KEY = @MESSAGE_KEY";
+WHERE PARTY_KEY = @id";
 
             var affected1 = await connection.ExecuteAsync(sql1,
-                new { MESSAGE_KEY = messageId },
+                new {id},
                 transaction: transaction);
 
             var affected2 = await connection.ExecuteAsync(sql2,
-                new { MESSAGE_KEY = messageId },
+                new {id},
                 transaction: transaction);
 
             // 둘 중 하나라도 업데이트되면 성공
@@ -335,19 +389,19 @@ WHERE MESSAGE_KEY = @MESSAGE_KEY
         }
     }
     
-    public static async Task<bool> PartyRename(ulong messageId, string newName, MySqlConnection connection, MySqlTransaction transaction)
+    public static async Task<bool> PartyRename(ulong messageKey, string newName, MySqlConnection connection, MySqlTransaction transaction)
     {
 
         try
         {
             var sql = @"
 UPDATE PARTY
-SET DISPLAY_NAME= @name
-WHERE MESSAGE_KEY = @MESSAGE_KEY
+SET DISPLAY_NAME= @newName
+WHERE MESSAGE_KEY = @messageKey
     ";
             
             var affectedRows = await connection.ExecuteAsync(sql,
-                new { MESSAGE_KEY = messageId , name = newName },
+                new { messageKey , newName },
                 transaction: transaction);
 
             return affectedRows > 0;
@@ -389,9 +443,21 @@ WHERE MESSAGE_KEY = @MESSAGE_KEY
         try
         {
             // 만료 시간이 지난 파티 목록 조회
+            // PARTY_KEY를 명시적으로 문자열로 변환하여 Dapper 매핑 문제 방지
             var parties = (await connection.QueryAsync<PartyEntity>(
                 @"
-SELECT * 
+SELECT 
+    DISPLAY_NAME,
+    CAST(PARTY_KEY AS CHAR(36)) AS PARTY_KEY,
+    MAX_COUNT_MEMBER,
+    MESSAGE_KEY,
+    GUILD_KEY,
+    CHANNEL_KEY,
+    OWNER_KEY,
+    OWNER_NICKNAME,
+    EXPIRE_DATE,
+    IS_CLOSED,
+    IS_EXPIRED
 FROM PARTY 
 WHERE IS_EXPIRED = FALSE
 AND EXPIRE_DATE <= NOW()
@@ -412,7 +478,7 @@ AND EXPIRE_DATE <= NOW()
         }
     }
 
-    public static async Task<bool> RemoveAllUser(ulong messageId, MySqlConnection connection,
+    public static async Task<bool> RemoveAllUser(string id, MySqlConnection connection,
         MySqlTransaction transaction)
     {
         try
@@ -420,21 +486,21 @@ AND EXPIRE_DATE <= NOW()
             var sql = @"
 UPDATE PARTY_MEMBER
 SET EXIT_FLAG = 1
-WHERE MESSAGE_KEY = @MessageKey
+WHERE PARTY_KEY = @id
             ";
             
             var sql2 = @"
 UPDATE PARTY_WAIT_MEMBER
 SET EXIT_FLAG = 1
-WHERE MESSAGE_KEY = @MessageKey
+WHERE PARTY_KEY = @id
             ";
             
             var a1 = await connection.ExecuteAsync(sql,
-                new { MessageKey = messageId },
+                new { id },
                 transaction: transaction);
             
             var a2 = await connection.ExecuteAsync(sql2,
-                new { MessageKey = messageId },
+                new { id },
                 transaction: transaction);
 
             return a2 > 0 || a1 > 0;
