@@ -1,11 +1,10 @@
 using Discord;
 using Discord.WebSocket;
 using DiscordBot.scripts._src.party;
-using DiscordBot.scripts._src.Partys;
 using DiscordBot.scripts.db.Models;
 using DiscordBot.scripts.db.Services;
 
-namespace DiscordBot.scripts._src.Discord;
+namespace DiscordBot.scripts._src.Services;
 
 
 public class DiscordServices : ISingleton
@@ -92,7 +91,7 @@ public class DiscordServices : ISingleton
     public async Task UpdateMessage(SocketInteraction component, PartyEntity party, bool isAllMessage, string message)
     {
         // 임베드 메시지 업데이트
-        var updatedEmbed = UpdatedEmbed(party);
+        var updatedEmbed = await UpdatedEmbed(party);
         var updatedComponent = UpdatedComponent(party);
         
         var originalMessage = await component.Channel.GetMessageAsync(party.MESSAGE_KEY) as IUserMessage;
@@ -219,10 +218,12 @@ public class DiscordServices : ISingleton
         return true;
     }
 
-    public Embed UpdatedEmbed(PartyEntity party)
+    public async Task<Embed> UpdatedEmbed(PartyEntity party)
     {
+        var embedList = new List<Embed>();
+        
         var memberList = party.Members.Count > 0 
-            ? string.Join("\n", party.Members.Select(info => $"**<@{info.USER_ID}>**"))
+            ? string.Join("\n", party.Members.Select(member => $"**<@{member.USER_ID}> ({member.USER_NICKNAME})**"))
             : "없음";
 
         string state;
@@ -233,8 +234,10 @@ public class DiscordServices : ISingleton
         else
             state = "";
         
-        var title = $"**{party.DISPLAY_NAME}** [생성자: {party.OWNER_NICKNAME}]{state}";
+        var title = $"**{party.DISPLAY_NAME}** {state}";
         var description = $"**참가자: {party.Members.Count}/{party.MAX_COUNT_MEMBER}**\n\n{memberList}";
+        
+        
         if (party.WaitMembers.Count > 0)
         {
             description += $"\n====================\n**대기열: {party.WaitMembers.Count}\n**";
@@ -243,7 +246,7 @@ public class DiscordServices : ISingleton
             for (var i = 0; i < array.Count; i++)
             {
                 var member = array[i];
-                description += $"\n순번: {i + 1} | 닉네임: <@{member.USER_ID}>";
+                description += $"\n순번: {i + 1} | 닉네임: <@{member.USER_ID}> ({member.USER_NICKNAME})";
             }
         }
         
@@ -255,15 +258,41 @@ public class DiscordServices : ISingleton
         if (party.IS_CLOSED) color = Color.Orange;
         if (party.IS_EXPIRED) color = Color.Red;
         
-        var updatedEmbed = new EmbedBuilder()
-            .WithTitle(title)
-            .WithDescription(description)
-            .WithColor(color)
-            .WithFooter($"버그제보(Discord): ojh1158 Version: {PartyConstant.VERSION}")
-            .WithCurrentTimestamp()
-            .Build();
+        var ownerUser = client.GetGuild(party.GUILD_KEY)?.GetUser(party.OWNER_KEY);
+        ownerUser ??= (await client.GetUserAsync(party.OWNER_KEY)) as SocketGuildUser;
+        string? ownerAvatarUrl = ownerUser?.GetDisplayAvatarUrl();
+
+        var updatedEmbed = new EmbedBuilder();
+            updatedEmbed
+                .WithTitle(title)
+                .WithAuthor(party.OWNER_NICKNAME ?? "알 수 없음", ownerAvatarUrl)  // 여기에 추가!
+                .WithDescription(description)
+                .WithColor(color)
+                .WithFooter($"버그제보(Discord): ojh1158 Version: {PartyConstant.VERSION}")
+                .WithCurrentTimestamp();
+            
+        embedList.Add(updatedEmbed.Build());
         
-        return updatedEmbed;
+        
+        return updatedEmbed.Build();
+    }
+
+    private async Task<List<Embed>> GetDisplayEmbeds(List<PartyMemberEntity> members, ulong guildId)
+    {
+        var embedList = new List<Embed>();
+        foreach (var partyMemberEntity in members)
+        {
+            var user = client.GetGuild(guildId)?.GetUser(partyMemberEntity.USER_ID);
+            user ??= (await client.GetUserAsync(partyMemberEntity.USER_ID)) as SocketGuildUser;
+            string? userUrl = user?.GetDisplayAvatarUrl();
+            
+            var updatedEmbed = new EmbedBuilder();
+            updatedEmbed
+                .WithAuthor(partyMemberEntity.USER_NICKNAME, userUrl); // 여기에 추가!
+            embedList.Add(updatedEmbed.Build());
+        }
+        
+        return embedList;
     }
 
     public MessageComponent UpdatedComponent(PartyEntity party)
@@ -318,7 +347,7 @@ public class DiscordServices : ISingleton
                 return true; // DB 업데이트는 성공했으므로 true 반환
             }
             
-            var embed = UpdatedEmbed(party);
+            var embed = await UpdatedEmbed(party);
             
             await channel.ModifyMessageAsync(party.MESSAGE_KEY, msg =>
             {

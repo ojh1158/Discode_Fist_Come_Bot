@@ -1,4 +1,4 @@
-using DiscordBot.scripts._src.Partys;
+using DiscordBot.scripts._src.party;
 using DiscordBot.scripts.db.Models;
 using DiscordBot.scripts.db.Repositories;
 using MySqlConnector;

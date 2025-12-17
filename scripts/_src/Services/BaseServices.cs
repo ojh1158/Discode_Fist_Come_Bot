@@ -1,5 +1,4 @@
 using Discord.WebSocket;
-using DiscordBot.scripts._src.Discord;
 
 namespace DiscordBot.scripts._src.Services;
 

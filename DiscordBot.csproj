@@ -29,10 +29,6 @@
     </None>
   </ItemGroup>
 
-  <ItemGroup>
-    <Folder Include="scripts\_src\Controllers\" />
-  </ItemGroup>
-
 </Project>
 
 

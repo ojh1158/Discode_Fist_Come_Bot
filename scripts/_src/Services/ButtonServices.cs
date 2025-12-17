@@ -1,8 +1,6 @@
 using Discord;
 using Discord.WebSocket;
-using DiscordBot.scripts._src.Discord;
 using DiscordBot.scripts._src.party;
-using DiscordBot.scripts._src.Partys;
 using DiscordBot.scripts.db.Services;
 
 namespace DiscordBot.scripts._src.Services;
@@ -23,7 +21,17 @@ public class ButtonServices : BaseServices
         if (parts.Length < 3 || parts[0] != "party")
             return;
         
-        var action = parts[1]; // "join", "leave", "expire" 등
+        var action = parts[1]; 
+        
+        if (action is PartyConstant.TEAM_REMOVE_KEY)
+        {
+            var key = parts[3];
+
+            var mes = await component.Channel.GetMessageAsync(ulong.Parse(key));
+
+            await mes.DeleteAsync();
+            return;
+        }
 
         var messageId = ulong.Parse(parts[2]);
 
@@ -32,7 +40,7 @@ public class ButtonServices : BaseServices
 
         var partyEntity = await PartyService.GetPartyEntityAsync(messageId);
         var partyClass = new PartyClass();
-        var error = partyClass.Init(partyEntity, component);
+        var error = await partyClass.Init(partyEntity, component, Services.client);
         var party = partyClass.Entity;
         
         if (error is not "")
@@ -118,13 +126,13 @@ public class ButtonServices : BaseServices
                 // 옵션 버튼들 만들기
                 var componentBuilder = new ComponentBuilder();
 
-                if (partyClass is {isAdmin: true} or {isPartyMember: true} or {isOwner: true})
+                if (partyClass is {isAdmin: true} or {isPartyMember: true} or {isOwner: true} or {isWater:true})
                 {
                     componentBuilder.WithButton(PartyConstant.PULLING_UP_KEY,$"party_{PartyConstant.OPTION_BUTTON_KEY}_{messageId}_{PartyConstant.PULLING_UP_KEY}", ButtonStyle.Success);
-                    
+                    componentBuilder.WithButton(PartyConstant.TEAM_KEY,$"party_{PartyConstant.OPTION_BUTTON_KEY}_{messageId}_{PartyConstant.TEAM_KEY}", ButtonStyle.Success);
                 }
 
-                if (party.Members.Count >= 1)
+                if (partyClass is {isAdmin: true} or {isPartyMember: true} or {isOwner: true} && party.Members.Count >= 1)
                 {
                     componentBuilder.WithButton(PartyConstant.PING_KEY, $"party_{PartyConstant.OPTION_BUTTON_KEY}_{messageId}_{PartyConstant.PING_KEY}", ButtonStyle.Success);
                     if (partyClass.isAdmin || partyClass.isOwner)
@@ -135,14 +143,11 @@ public class ButtonServices : BaseServices
 
                 if (partyClass.isAdmin || partyClass.isOwner)
                 {
-                    componentBuilder.WithButton(PartyConstant.JOIN_AUTO_KEY, $"party_{PartyConstant.OPTION_BUTTON_KEY}_{messageId}_{PartyConstant.JOIN_AUTO_KEY}", ButtonStyle.Secondary);
+                    componentBuilder.WithButton(PartyConstant.JOIN_AUTO_KEY, $"party_{PartyConstant.OPTION_BUTTON_KEY}_{messageId}_{PartyConstant.JOIN_AUTO_KEY}", ButtonStyle.Success);
                     componentBuilder.WithButton(PartyConstant.PARTY_KEY,$"party_{PartyConstant.OPTION_BUTTON_KEY}_{messageId}_{PartyConstant.PARTY_KEY}", ButtonStyle.Primary);
+                    componentBuilder.WithButton(party.IS_CLOSED ? "재개" : PartyConstant.CLOSE_KEY, $"party_{PartyConstant.OPTION_BUTTON_KEY}_{messageId}_{PartyConstant.CLOSE_KEY}", party.IS_CLOSED ? ButtonStyle.Success : ButtonStyle.Danger);
+                    componentBuilder.WithButton(PartyConstant.EXPIRE_KEY, $"party_{PartyConstant.OPTION_BUTTON_KEY}_{messageId}_{PartyConstant.EXPIRE_KEY}", ButtonStyle.Secondary);
                 }
-                
-                componentBuilder.WithButton(party.IS_CLOSED ? "재개" : PartyConstant.CLOSE_KEY, $"party_{PartyConstant.OPTION_BUTTON_KEY}_{messageId}_{PartyConstant.CLOSE_KEY}", party.IS_CLOSED ? ButtonStyle.Success : ButtonStyle.Danger);
-                componentBuilder.WithButton(PartyConstant.EXPIRE_KEY, $"party_{PartyConstant.OPTION_BUTTON_KEY}_{messageId}_{PartyConstant.EXPIRE_KEY}", ButtonStyle.Secondary);
-                
-                
                 
                 await component.ModifyOriginalResponseAsync( m =>
                 {
@@ -154,7 +159,7 @@ public class ButtonServices : BaseServices
                 return;
             case PartyConstant.OPTION_BUTTON_KEY:
 
-                if (parts[3] != PartyConstant.PARTY_KEY)
+                if (parts[3] is not PartyConstant.PARTY_KEY and not PartyConstant.TEAM_KEY)
                 {
                     // 옵션 메시지를 업데이트로 제거
                     await component.UpdateAsync(msg =>
@@ -280,50 +285,18 @@ public class ButtonServices : BaseServices
                         return;
                     case PartyConstant.JOIN_AUTO_KEY:
                         
+                        var interactionMessage = await component.ModifyOriginalResponseAsync(msg =>
+                        {
+                            msg.Content = $"초기화 중...";
+                            msg.Components = null;
+                        });
+                        
                         var selectMenuBuilder = new SelectMenuBuilder()
                             .WithCustomId($"party_{PartyConstant.JOIN_AUTO_KEY}_{messageId}")
-                            .WithPlaceholder("추가할 유저를 선택하세요");
-                        
-                        // 채널이 서버 채널인 경우에만 유저 목록 가져오기
-                        if (component.Channel is IGuildChannel guildChannel)
-                        {
-                            var allUsers = new List<IGuildUser>();
-                            await foreach (var userBatch in guildChannel.GetUsersAsync())
-                            {
-                                allUsers.AddRange(userBatch);
-                            }
-                            
-                            // SelectMenu 옵션은 최대 25개까지 가능
-                            var usersToAdd = allUsers
-                                .Where(u => u is { IsBot: false, Status: not UserStatus.Offline }) // 봇 제외, 오프라인 유저 제외
-                                .Take(25) // 최대 25개
-                                .ToList();
-                            
-                            if (usersToAdd.Count == 0)
-                            {
-                                // 추가할 수 있는 유저가 없는 경우
-                                await component.ModifyOriginalResponseAsync(msg =>
-                                {
-                                    msg.Content = "❌ 추가할 수 있는 온라인 유저가 없습니다.";
-                                });
-                                _ = Services.RespondMessageWithExpire(component, time: 5);
-                                return;
-                            }
-                            
-                            foreach (var user in usersToAdd)
-                            {
-                                selectMenuBuilder.AddOption(
-                                    user.DisplayName ?? user.Username, 
-                                    user.Id.ToString(),
-                                    description: user.Username
-                                );
-                            }
-                        }
-                        else
-                        {
-                            // 서버 채널이 아닌 경우 테스트 옵션만 추가
-                            selectMenuBuilder.AddOption("테스트", "ㅎㅎㅎ");
-                        }
+                            .WithPlaceholder("추가할 유저를 선택하세요")
+                            .WithMinValues(1)
+                            .WithMaxValues(25)
+                            .WithType(ComponentType.UserSelect);
                         
                         // 확인 버튼 생성
                         var ag = new ComponentBuilder()
@@ -336,32 +309,52 @@ public class ButtonServices : BaseServices
                             msg.Content = $"⚠️ 추가할 유저를 선택하세요";
                             msg.Components = ag;
                         });
-                        _ = Services.RespondMessageWithExpire(component, time: 30);
                         return;
                     case PartyConstant.KICK_KEY:
-                        var builder = new ComponentBuilder();
-                        
-                        foreach (var entity in party.Members)
+                        var restInteractionMessage = await component.ModifyOriginalResponseAsync(msg =>
                         {
-                            builder.WithButton($"{entity.USER_NICKNAME}",
-                                $"party_{PartyConstant.KICK_BUTTON_KEY}_{messageId}_{entity.USER_ID}");
-                        }
+                            msg.Content = $"초기화 중...";
+                            msg.Components = null;
+                        });
                         
-                        foreach (var entity in party.WaitMembers)
-                        {
-                            builder.WithButton($"{entity.USER_NICKNAME}",
-                                $"party_{PartyConstant.KICK_BUTTON_KEY}_{messageId}_{entity.USER_ID}");
-                        }
+                        var menuBuilder = new SelectMenuBuilder()
+                            .WithCustomId($"party_{PartyConstant.KICK_KEY}_{messageId}")
+                            .WithPlaceholder("강퇴할 유저를 선택하세요")
+                            .WithMinValues(1)
+                            .WithMaxValues(25)
+                            .WithType(ComponentType.UserSelect);
                         
+                        // 확인 버튼 생성
+                        var build = new ComponentBuilder()
+                            .WithSelectMenu(menuBuilder)
+                            .Build();
+
+                        // await component.DeleteOriginalResponseAsync();
                         await component.ModifyOriginalResponseAsync(msg =>
                         {
-                            msg.Content = $"추방할 맴버를 선택하세요";
-                            msg.Components = builder.Build();
+                            msg.Content = $"⚠️ 추가할 유저를 선택하세요";
+                            msg.Components = build;
                         });
-                        _ = Services.RespondMessageWithExpire(component, time: 30);
+                        return;
+                    case PartyConstant.TEAM_KEY:
+                        // 컴포넌트 10개까지만 가능
+                        var maxCount = Math.Min(party.Members.Count, 10);
+                        
+                        var teamModal = new ModalBuilder()
+                            .WithTitle("팀 만들기")
+                            .WithCustomId($"party_{PartyConstant.TEAM_KEY}_{messageId}")
+                            .AddTextInput("팀 갯수", "count", TextInputStyle.Short, 
+                                placeholder: $"{1}-{maxCount}", 
+                                required: true,
+                                value: "",
+                                minLength: 0,
+                                maxLength: 10)
+                            .Build();
+                        
+                        await component.RespondWithModalAsync(teamModal);
                         
                         return;
-                    
+                        // break;
                     case PartyConstant.PULLING_UP_KEY:
 
                         var channel = component.Channel;
@@ -383,7 +376,7 @@ public class ButtonServices : BaseServices
 
                         party.MESSAGE_KEY = sendMessageAsync.Id;
 
-                        var updatedEmbed = Services.UpdatedEmbed(party);
+                        var updatedEmbed = await Services.UpdatedEmbed(party);
                         var updatedComponent = Services.UpdatedComponent(party);
                         
                         await sendMessageAsync.ModifyAsync(m =>

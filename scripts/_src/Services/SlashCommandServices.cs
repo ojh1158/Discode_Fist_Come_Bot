@@ -1,5 +1,4 @@
 using Discord.WebSocket;
-using DiscordBot.scripts._src.Discord;
 using DiscordBot.scripts._src.party;
 using DiscordBot.scripts.db.Models;
 using DiscordBot.scripts.db.Services;
@@ -144,7 +143,7 @@ public class SlashCommandServices : BaseServices
             return;
         }
 
-        var updatedEmbed = Services.UpdatedEmbed(party);
+        var updatedEmbed = await Services.UpdatedEmbed(party);
         var component = Services.UpdatedComponent(party);
         
         await message.ModifyAsync(m =>

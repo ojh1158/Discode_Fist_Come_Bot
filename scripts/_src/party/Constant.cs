@@ -8,7 +8,7 @@ public class PartyConstant
     
     public const int MAX_NAME_COUNT = 50;
     
-    public const string VERSION = "1.1.2";
+    public const string VERSION = "1.1.5";
 
     public const string JOIN_KEY = "참가";
     public const string LEAVE_KEY = "나가기";
@@ -27,6 +27,8 @@ public class PartyConstant
     public const string PARTY_KEY = "파티설정";
     public const string JOIN_AUTO_KEY = "인원추가";
     public const string KICK_KEY = "강퇴";
+    public const string TEAM_KEY = "팀 만들기";
+    public const string TEAM_REMOVE_KEY = "팀 삭제";
     
     public const string YES_BUTTON_KEY = "yes";
     public const string NO_BUTTON_KEY = "no";

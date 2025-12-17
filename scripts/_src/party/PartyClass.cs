@@ -1,7 +1,7 @@
 using Discord.WebSocket;
 using DiscordBot.scripts.db.Models;
 
-namespace DiscordBot.scripts._src.Partys;
+namespace DiscordBot.scripts._src.party;
 
 public class PartyClass
 {
@@ -18,7 +18,7 @@ public class PartyClass
     public string userNickname;
     public string userRoleString;
 
-    public string Init(PartyEntity? partyEntity, SocketInteraction  interaction)
+    public async Task<string> Init(PartyEntity? partyEntity, SocketInteraction  interaction, DiscordSocketClient discord)
     {
         if (partyEntity == null)
         {
@@ -41,7 +41,34 @@ public class PartyClass
         isPartyMember = Entity.Members.Any(x => x.USER_ID == userId);
         isNone = !isAdmin && !isWater && !isPartyMember && !isOwner;
         
-        userNickname = string.IsNullOrEmpty(user.Nickname) ? user.Username : user.Nickname;
+        // 길드에서 최신 유저 정보를 가져와서 닉네임 확인 (Rest API 사용)
+        try
+        {
+            var restGuild = await discord.Rest.GetGuildAsync(user.Guild.Id);
+            if (restGuild != null)
+            {
+                var guildUserInfo = await restGuild.GetUserAsync(userId);
+                if (guildUserInfo != null && !string.IsNullOrEmpty(guildUserInfo.Nickname))
+                {
+                    // Rest API에서 가져온 닉네임 사용
+                    userNickname = guildUserInfo.Nickname;
+                }
+                else
+                {
+                    // 닉네임이 없으면 Username 사용
+                    userNickname = guildUserInfo?.GlobalName ?? user.Username;
+                }
+            }
+            else
+            {
+                userNickname = string.IsNullOrEmpty(user.Nickname) ? user.Username : user.Nickname;
+            }
+        }
+        catch
+        {
+            // Rest API 호출 실패 시 기존 user 사용
+            userNickname = string.IsNullOrEmpty(user.Nickname) ? user.Username : user.Nickname;
+        }
         
         
         userRoleString = "일반";
