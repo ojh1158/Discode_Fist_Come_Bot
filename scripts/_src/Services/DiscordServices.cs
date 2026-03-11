@@ -3,6 +3,7 @@ using Discord;
 using Discord.Rest;
 using Discord.WebSocket;
 using DiscordBot.scripts._src.party;
+using DiscordBot.scripts._src.util;
 using DiscordBot.scripts.db.Models;
 using DiscordBot.scripts.db.Services;
 
@@ -12,20 +13,21 @@ namespace DiscordBot.scripts._src.Services;
 public class DiscordServices : ISingleton
 {
     public readonly DiscordSocketClient client;
+
     public DiscordServices(DiscordSocketClient discord)
     {
         client = discord;
-        
+
         _ = Task.Run(async () =>
         {
             client.Log += LogAsync;
             client.Ready += () => ReadyAsync(client);
 
             // 봇 로그인 및 시작 - 테스트 모드면 TEST_DISCORD_TOKEN 사용
-            var token = App.IsTest 
+            var token = App.IsTest
                 ? Environment.GetEnvironmentVariable("TEST_DISCORDTOKEN")
                 : Environment.GetEnvironmentVariable("DISCORDTOKEN");
-            
+
             if (string.IsNullOrEmpty(token))
             {
                 Console.WriteLine($"에러: {(App.IsTest ? "TEST_DISCORD_TOKEN" : "DISCORD_TOKEN")} 환경변수가 설정되지 않았습니다.");
@@ -35,7 +37,7 @@ public class DiscordServices : ISingleton
             Console.WriteLine($"[{(App.IsTest ? "테스트" : "프로덕션")} 모드] 봇 시작 중...");
             await client.LoginAsync(TokenType.Bot, token);
             await client.StartAsync();
-            
+
             // client.SlashCommandExecuted += HandleSlashCommandAsync;
             // client.ButtonExecuted += HandleButtonAsync;
             // client.ModalSubmitted += HandleModalAsync;
@@ -43,7 +45,7 @@ public class DiscordServices : ISingleton
             // client.Ready += InitCommands;
         });
     }
-    
+
     private Task LogAsync(LogMessage log)
     {
         Console.WriteLine(log.ToString());
@@ -59,7 +61,8 @@ public class DiscordServices : ISingleton
             new SlashCommandBuilder()
                 .WithName("파티")
                 .WithDescription($"파티를 생성합니다. 허용 인원은 {PartyConstant.MIN_COUNT}-{PartyConstant.MAX_COUNT} 입니다.")
-                .AddOption("이름", ApplicationCommandOptionType.String, "파티 이름", isRequired: true, minLength: 1, maxLength: PartyConstant.MAX_NAME_COUNT)
+                .AddOption("이름", ApplicationCommandOptionType.String, "파티 이름", isRequired: true, minLength: 1,
+                    maxLength: PartyConstant.MAX_NAME_COUNT)
                 .AddOption("인원", ApplicationCommandOptionType.Integer, "파티 인원", isRequired: true)
                 .AddOption(
                     name: "시작시간설정",
@@ -75,29 +78,30 @@ public class DiscordServices : ISingleton
                     isRequired: false
                 )
         };
-        
+
         // 내용이 다르거나 없는 명령어 생성/업데이트
         foreach (var commandBuilder in array)
         {
             var built = commandBuilder.Build();
             var existing = commands.FirstOrDefault(c => c.Name == built.Name.Value);
-            
+
             if (existing == null || !CommandEquals(existing, built))
             {
                 if (existing != null)
                 {
                     await existing.DeleteAsync();
                 }
+
                 await client.CreateGlobalApplicationCommandAsync(built);
             }
         }
-        
+
         // array에 없는 명령어 삭제
         foreach (var socketApplicationCommand in commands.Where(c => !array.Any(f => f.Name == c.Name)))
         {
             await socketApplicationCommand.DeleteAsync();
         }
-        
+
         Console.WriteLine($"{client.CurrentUser.Username} 봇이 준비되었습니다!");
     }
 
@@ -106,7 +110,7 @@ public class DiscordServices : ISingleton
         // 임베드 메시지 업데이트
         var updatedEmbed = await UpdatedEmbed(party);
         var updatedComponent = UpdatedComponent(party);
-        
+
         var originalMessage = await component.Channel.GetMessageAsync(party.MESSAGE_KEY) as IUserMessage;
         if (originalMessage == null)
         {
@@ -119,7 +123,7 @@ public class DiscordServices : ISingleton
         // 원본 메시지 수정
         if (originalMessage != null)
         {
-            
+
             await originalMessage.ModifyAsync(msg =>
             {
                 msg.Content = null;
@@ -133,6 +137,7 @@ public class DiscordServices : ISingleton
                 {
                     await component.DeferAsync();
                 }
+
                 await originalMessage.ReplyAsync(message);
             }
         }
@@ -146,12 +151,12 @@ public class DiscordServices : ISingleton
     public void MessageWithExpire(IUserMessage message, int time = 10, Action? action = null)
     {
         var content = message.Content ?? "";
-        
+
         var separator = "\u200B"; // Zero-Width Space
-        var exMessage = $"{separator} (해당 메세지는 {ToDiscordRelativeTimestamp(DateTime.Now.AddSeconds(time))} 삭제됩니다.)";
+        var exMessage = $"{separator} (해당 메세지는 {DateTime.Now.AddSeconds(time).ToDiscordRelativeTimestamp()} 삭제됩니다.)";
 
         message.ModifyAsync(mp => mp.Content = $"{content}{exMessage}");
-        
+
         // 백그라운드에서 삭제
         _ = Task.Run(async () =>
         {
@@ -186,17 +191,19 @@ public class DiscordServices : ISingleton
         });
     }
 
-    public async Task RespondMessageWithExpire(SocketInteraction component, int time = 10, string? message = null, MessageComponent? addComponent = null)
+    public async Task RespondMessageWithExpire(SocketInteraction component, int time = 10, string? message = null,
+        MessageComponent? addComponent = null)
     {
         var separator = "\u200B"; // Zero-Width Space
-        var exMessage = $"{separator} (해당 메세지는 {ToDiscordRelativeTimestamp(DateTime.Now.AddSeconds(time))} 삭제됩니다.)";
-        
+        var exMessage = $"{separator} (해당 메세지는 {DateTime.Now.AddSeconds(time).ToDiscordRelativeTimestamp()} 삭제됩니다.)";
+
         if (message != null)
         {
             // HasResponded 체크 - 이미 응답했는지 확인
             if (!component.HasResponded)
             {
-                if (addComponent != null) await component.RespondAsync(message + exMessage, components:addComponent, ephemeral: true);
+                if (addComponent != null)
+                    await component.RespondAsync(message + exMessage, components: addComponent, ephemeral: true);
                 else await component.RespondAsync(message + exMessage, ephemeral: true);
             }
             else
@@ -216,7 +223,7 @@ public class DiscordServices : ISingleton
                 // 원본 응답이 없는 경우 (이미 삭제되었거나 존재하지 않음)
                 return;
             }
-            
+
             message = originalResponse.Content;
             await component.ModifyOriginalResponseAsync(m =>
             {
@@ -224,7 +231,7 @@ public class DiscordServices : ISingleton
                 if (addComponent != null) m.Components = addComponent;
             });
         }
-        
+
         // 백그라운드에서 삭제
         _ = Task.Run(async () =>
         {
@@ -232,13 +239,14 @@ public class DiscordServices : ISingleton
 
             var originalResponseAsync = await component.GetOriginalResponseAsync();
             if (originalResponseAsync == null) return;
-            
+
             var old = originalResponseAsync.Content;
             var s = old.Split(separator)[0];
             if (s != message)
             {
                 return;
             }
+
             try
             {
                 await component.DeleteOriginalResponseAsync();
@@ -249,38 +257,38 @@ public class DiscordServices : ISingleton
             }
         });
     }
-    
+
     private bool CommandEquals(SocketApplicationCommand existing, SlashCommandProperties built)
     {
         // Description 비교
         if (existing.Description != built.Description.Value) return false;
-        
+
         // Options 개수 비교
         var builtOptionsCount = built.Options.IsSpecified ? built.Options.Value.Count : 0;
         if (existing.Options.Count != builtOptionsCount) return false;
-        
+
         // Options가 없으면 true
         if (!built.Options.IsSpecified) return existing.Options.Count == 0;
-        
+
         var existingOptions = existing.Options.ToList();
         var builtOptions = built.Options.Value.ToList();
-        
+
         for (int i = 0; i < existingOptions.Count; i++)
         {
             var e = existingOptions[i];
             var b = builtOptions[i];
-            
-            if (e.Name != b.Name || e.Type != b.Type || 
+
+            if (e.Name != b.Name || e.Type != b.Type ||
                 e.Description != b.Description)
                 return false;
         }
-        
+
         return true;
     }
 
     public async Task<Embed> UpdatedEmbed(PartyEntity party)
     {
-        var memberList = party.Members.Count > 0 
+        var memberList = party.Members.Count > 0
             ? string.Join("\n", party.Members.Select(member => $"**<@{member.USER_ID}> ({member.USER_NICKNAME})**"))
             : "없음";
 
@@ -291,18 +299,29 @@ public class DiscordServices : ISingleton
             state = " (일시정지)";
         else
             state = "";
-        
+
         var title = $"**{party.DISPLAY_NAME}** {state}";
 
         var stateDate = party.START_DATE.HasValue ? new DatePickerState().FromDateTime(party.START_DATE.Value) : null;
-        var expireDate = party.EXPIRE_DATE.HasValue ? new DatePickerState().FromDateTime(party.EXPIRE_DATE.Value) : null;
+        var expireDate = party.EXPIRE_DATE.HasValue
+            ? new DatePickerState().FromDateTime(party.EXPIRE_DATE.Value)
+            : null;
+
+        var description = "";
         
-        var description = 
-            $"**시작시간: {(stateDate != null ? ($"{ToDiscordRelativeTimestamp(party.START_DATE!.Value)}") : "없음")} ({stateDate?.ToDisplayString() ?? "###"})**\n" +
-            $"**파티장소: <#{party.VOICE_CHANNEL_KEY}>**\n\n" +
-            $"**참가자: {party.Members.Count}/{party.MAX_COUNT_MEMBER}**\n\n{memberList}";
-        
-        
+        if (party.START_DATE.HasValue && stateDate != null)
+        {
+            description += $"**시작시간: {party.START_DATE?.ToDiscordRelativeTimestamp()} ({stateDate.ToDisplayString()}) **\n";
+        }
+        if (party.VOICE_CHANNEL_KEY != null)
+        {
+            description += $"**파티장소: <#{party.VOICE_CHANNEL_KEY}> **\n";
+        }
+
+        description += "\n\n";
+
+        description += $"** 참가자: {party.Members.Count}/{party.MAX_COUNT_MEMBER} **\n\n{memberList}";
+
         if (party.WaitMembers.Count > 0)
         {
             description += $"\n====================\n**대기열: {party.WaitMembers.Count}\n**";
@@ -314,30 +333,38 @@ public class DiscordServices : ISingleton
                 description += $"\n순번: {i + 1} | 닉네임: <@{member.USER_ID}> ({member.USER_NICKNAME})";
             }
         }
-        
+
         // 만료시간 추가 (강조 표시)
-        description += $"\n\n\n**만료시간: {(expireDate != null ? ($"{ToDiscordRelativeTimestamp(party.EXPIRE_DATE!.Value)}") : "없음")} ({expireDate?.ToDisplayString() ?? "###"})**";
-        
+
+        if (expireDate != null)
+        {
+            description += $"\n\n\n**만료시간: {party.EXPIRE_DATE?.ToDiscordRelativeTimestamp()} ({expireDate.ToDisplayString()})**";
+        }
+        else
+        {
+            description += $"\n\u200B";
+        }
+
         var color = Color.Blue;
         if (party.MAX_COUNT_MEMBER == party.Members.Count) color = Color.Green;
         if (party.IS_CLOSED) color = Color.Orange;
         if (party.IS_EXPIRED) color = Color.Red;
-        
+
         var ownerUser = await client.Rest.GetGuildAsync(party.GUILD_KEY);
         var user = await ownerUser.GetUserAsync(party.OWNER_KEY);
         // ownerUser ??= (await client.GetUserAsync(party.OWNER_KEY)) as SocketGuildUser;
         string? ownerAvatarUrl = user?.GetDisplayAvatarUrl();
 
         var updatedEmbed = new EmbedBuilder();
-            updatedEmbed
-                .WithTitle(title)
-                .WithAuthor(party.OWNER_NICKNAME ?? "알 수 없음", ownerAvatarUrl)  // 여기에 추가!
-                .WithDescription(description)
-                .WithColor(color)
-                .WithFooter($"버그제보(Discord): ojh1158 Version: {PartyConstant.VERSION}")
-                .WithCurrentTimestamp();
-        
-        
+        updatedEmbed
+            .WithTitle(title)
+            .WithAuthor(party.OWNER_NICKNAME ?? "알 수 없음", ownerAvatarUrl) // 여기에 추가!
+            .WithDescription(description)
+            .WithColor(color)
+            .WithFooter($"버그제보(Discord): ojh1158 Version: {PartyConstant.VERSION}")
+            .WithCurrentTimestamp();
+
+
         return updatedEmbed.Build();
     }
 
@@ -349,13 +376,13 @@ public class DiscordServices : ISingleton
             var user = client.GetGuild(guildId)?.GetUser(partyMemberEntity.USER_ID);
             user ??= (await client.GetUserAsync(partyMemberEntity.USER_ID)) as SocketGuildUser;
             string? userUrl = user?.GetDisplayAvatarUrl();
-            
+
             var updatedEmbed = new EmbedBuilder();
             updatedEmbed
                 .WithAuthor(partyMemberEntity.USER_NICKNAME, userUrl); // 여기에 추가!
             embedList.Add(updatedEmbed.Build());
         }
-        
+
         return embedList;
     }
 
@@ -377,20 +404,22 @@ public class DiscordServices : ISingleton
             }
             else
             {
-                component.WithButton(PartyConstant.JOIN_KEY, $"{PartyConstant.JOIN_KEY}_{partyKey}", ButtonStyle.Success);
+                component.WithButton(PartyConstant.JOIN_KEY, $"{PartyConstant.JOIN_KEY}_{partyKey}",
+                    ButtonStyle.Success);
             }
         }
 
         component.WithButton(PartyConstant.LEAVE_KEY, $"{PartyConstant.LEAVE_KEY}_{partyKey}", ButtonStyle.Danger);
 
         component.WithButton(PartyConstant.OPTION_KEY, $"{PartyConstant.OPTION_KEY}_{partyKey}", ButtonStyle.Secondary);
-        
+
         return component.Build();
     }
 
     public async Task<bool> ExpirePartyAsync(PartyEntity party, ISocketMessageChannel? channel = null)
     {
-        try{
+        try
+        {
             channel = await client.GetChannelAsync(party.CHANNEL_KEY) as ISocketMessageChannel;
         }
         catch (Exception)
@@ -401,13 +430,13 @@ public class DiscordServices : ISingleton
         }
 
         if (channel == null) return false;
-        
+
         var result = await PartyService.ExpirePartyAsync(party.MESSAGE_KEY);
 
         if (!result) return false;
-        
+
         party.IS_EXPIRED = true;
-        
+
         try
         {
             // 메시지를 먼저 가져와서 봇이 작성한 메시지인지 확인
@@ -415,12 +444,13 @@ public class DiscordServices : ISingleton
             if (message == null || message.Author.Id != client.CurrentUser.Id)
             {
                 // 봇이 작성한 메시지가 아니거나 메시지가 없는 경우
-                Console.WriteLine($"[ExpirePartyAsync] 메시지를 수정할 수 없습니다. (MESSAGE_KEY: {party.MESSAGE_KEY}, Author: {message?.Author?.Id})");
+                Console.WriteLine(
+                    $"[ExpirePartyAsync] 메시지를 수정할 수 없습니다. (MESSAGE_KEY: {party.MESSAGE_KEY}, Author: {message?.Author?.Id})");
                 return true; // DB 업데이트는 성공했으므로 true 반환
             }
-            
+
             var embed = await UpdatedEmbed(party);
-            
+
             await channel.ModifyMessageAsync(party.MESSAGE_KEY, msg =>
             {
                 msg.Embed = embed;
@@ -432,20 +462,8 @@ public class DiscordServices : ISingleton
             Console.WriteLine($"[ExpirePartyAsync] 메시지 수정 중 오류 발생: {ex.Message}");
             return true; // DB 업데이트는 성공했으므로 true 반환
         }
-        
+
         return true;
-    }
-    
-    public string ToDiscordRelativeTimestamp(DateTime kstDateTime)
-    {
-        var kstOffset = TimeSpan.FromHours(9);
-        
-        var unspecifiedDateTime = new DateTime(kstDateTime.Ticks, DateTimeKind.Unspecified);
-        var timeWithOffset = new DateTimeOffset(unspecifiedDateTime, kstOffset);
-        
-        var unixTimestamp = timeWithOffset.ToUnixTimeSeconds();
-        
-        return $"<t:{unixTimestamp}:R>";
     }
 
     public MessageComponent GetSettingComponent()
@@ -574,7 +592,7 @@ public class DiscordServices : ISingleton
 
     public string ToLinkChanner(ulong channelId)
     {
-        return $"\n(<#{channelId}>)[{ToDiscordRelativeTimestamp(DateTime.Now)}]\n\\\u200B";
+        return $"\n(<#{channelId}>)[{DateTime.Now.ToDiscordRelativeTimestamp()}]\n\\\u200B";
     }
 
     public Dictionary<string, DatePickerState> dateDic = new();
@@ -592,7 +610,7 @@ public class DiscordServices : ISingleton
         var key = stateId.ToString();
 
         embedBuilder.WithTitle($"{title}");
-        embedBuilder.WithDescription($"{state.ToDisplayString()} {ToDiscordRelativeTimestamp(state.ToDateTime())}");
+        embedBuilder.WithDescription($"{state.ToDisplayString()} {state.ToDateTime().ToDiscordRelativeTimestamp()}");
         embedBuilder.WithColor(Color.Blue);
 
         var dataPickup = $"{(isFirst ? PartyConstant.DATE_PICKUP_FIRST_KEY : PartyConstant.DATE_PICKUP_KEY)}_{party.PARTY_KEY}_{key}_{title}";
@@ -755,10 +773,26 @@ public class DatePickerState
     public bool IsDateDisplay { get; set; } = false;
     
 
-    // 상단 표시용 문자열 (하드코딩)
-    public string ToDisplayString() 
-        => $"{Year}년 {Month}월 {FullDay}일 {Hour}시 {FullMinute}분";
-    
+    // 상단 표시용 문자열
+    public string ToDisplayString()
+    {
+        var now = DateTime.Now;
+        var result = "";
+
+        if (now.Year != Year)
+        {
+            result += $"{Year}년 {Month}월 ";
+        }
+        else if (now.Month != Month)
+        {
+            result += $"{Month}월 ";
+        }
+
+        result += $"{FullDay}일 {Hour}시 {FullMinute}분";
+
+        return result;
+    }
+
     public DateTime ToDateTime()
     {
         try
