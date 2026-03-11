@@ -255,6 +255,14 @@ public class PartyService : ISingleton
         
         return partyEntities;
     }
+    
+    public static Task<bool> SetOwner(string partyKey, ulong ownerKey, string name)
+    {
+        return DatabaseController.ExecuteInTransactionAsync(async (conn, trans) =>
+        {
+            return await PartyRepository.SetOwner(partyKey, ownerKey, name, conn, trans);
+        });
+    }
 
     public static Task<bool> SetStartDate(string partyKey, DateTime dateTime)
     {

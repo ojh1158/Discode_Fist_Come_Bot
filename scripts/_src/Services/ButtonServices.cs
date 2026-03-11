@@ -185,7 +185,7 @@ public class ButtonServices : BaseServices
                     componentBuilder.WithButton(PartyConstant.START_TIME_OPEN_KEY,$"{PartyConstant.START_TIME_OPEN_KEY}_{partyKey}", ButtonStyle.Primary, row:2);
                     componentBuilder.WithButton(PartyConstant.EXPIRE_TIME_OPEN_KEY,$"{PartyConstant.EXPIRE_TIME_OPEN_KEY}_{partyKey}", ButtonStyle.Primary, row:2);
                     
-                    
+                    componentBuilder.WithButton(PartyConstant.MOVE_OWNER_KEY, $"{PartyConstant.MOVE_OWNER_KEY}_{partyKey}", ButtonStyle.Primary, row:3);
                     componentBuilder.WithButton(party.IS_CLOSED ? "재개" : PartyConstant.CLOSE_KEY, $"{PartyConstant.CLOSE_KEY}_{partyKey}", party.IS_CLOSED ? ButtonStyle.Success : ButtonStyle.Danger, row:3);
                     componentBuilder.WithButton(PartyConstant.EXPIRE_KEY, $"{PartyConstant.EXPIRE_KEY}_{partyKey}", ButtonStyle.Secondary, row:3);
                 }
@@ -578,8 +578,29 @@ public class ButtonServices : BaseServices
                         message = "설정을 취소하였습니다.";
                         break;
                 }
-                
                 break;
+                
+                case PartyConstant.MOVE_OWNER_KEY:
+                selectMenuBuilder = new SelectMenuBuilder()
+                    .WithCustomId($"{PartyConstant.MOVE_OWNER_KEY}_{partyKey}")
+                    .WithPlaceholder("파티를 위임할 유저를 선택하세요")
+                    .WithMinValues(1)
+                    .WithMaxValues(1)
+                    .WithType(ComponentType.UserSelect);
+                
+                ag = new ComponentBuilder()
+                    .WithSelectMenu(selectMenuBuilder)
+                    .Build();
+
+                await component.ModifyOriginalResponseAsync(msg =>
+                {
+                    msg.Content = $"⚠️ 파티를 위임할 유저를 선택하세요";
+                    msg.Components = ag;
+                });
+                
+                return;
+                break;
+                
         }
         
         await Services.UpdateMessage(component, party, isAllMessage, message);

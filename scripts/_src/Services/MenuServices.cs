@@ -66,34 +66,34 @@ public class MenuServices : BaseServices
         switch (action)
         {
             case PartyConstant.JOIN_AUTO_KEY:
-        
+
                 if (action == PartyConstant.JOIN_AUTO_KEY)
                 {
                     if (partyEntity == null)
                     {
-                        await component.ModifyOriginalResponseAsync(m=> m.Content = "파티를 찾을 수 없습니다.");
+                        await component.ModifyOriginalResponseAsync(m => m.Content = "파티를 찾을 수 없습니다.");
                         return;
                     }
 
                     string? message = null;
                     var IsFullAlart = false;
                     var addCount = 0;
-                    
+
                     foreach (var selectedValue in selectedValues)
                     {
                         // 선택된 유저 ID를 파싱하여 파티에 추가
                         // 예: selectedValue가 "123456789" (ulong)라면
-                        
-                        
+
+
                         if (ulong.TryParse(selectedValue, out var userId))
                         {
                             IUser? user = Services.client.GetGuild(partyEntity.GUILD_KEY).GetUser(userId);
                             user ??= await Services.client.GetUserAsync(userId); // RestUser 반환
-                            
+
                             if (user is { IsBot: false })
                             {
                                 string name;
-                                
+
                                 if (user is IGuildUser guildUser)
                                 {
                                     name = guildUser.DisplayName;
@@ -128,15 +128,15 @@ public class MenuServices : BaseServices
                                         name = user.GlobalName ?? user.Username;
                                     }
                                 }
-                                
+
                                 var type = await PartyService.JoinPartyAsync(partyEntity, userId, name);
                                 addCount++;
-                                
+
                                 if (!IsFullAlart)
                                 {
                                     IsFullAlart = partyEntity.Members.Count + addCount == partyEntity.MAX_COUNT_MEMBER;
                                 }
-                                
+
                                 // 파티에 유저 추가 로직
                                 if (message == null)
                                     message = "";
@@ -144,7 +144,7 @@ public class MenuServices : BaseServices
                             }
                         }
                     }
-                    
+
                     string finalMessage;
                     if (string.IsNullOrWhiteSpace(message))
                     {
@@ -156,28 +156,31 @@ public class MenuServices : BaseServices
                     {
                         allMessageFlag = true;
                         allmessage = $"{partyClass.userRoleString}님이 다음 파티원을 초대하였습니다!\n" + message;
-                        if(IsFullAlart) Services.SendUserAlert(partyEntity, component.User, PartyConstant.JOIN_AUTO_KEY);
+                        if (IsFullAlart)
+                            Services.SendUserAlert(partyEntity, component.User, PartyConstant.JOIN_AUTO_KEY);
                         await component.DeleteOriginalResponseAsync();
                     }
                 }
+
                 break;
             case PartyConstant.KICK_KEY:
 
                 var ms = "";
 
                 var dic = new Dictionary<ulong, PartyMemberEntity>();
-                
+
                 foreach (var entity in partyEntity.Members)
                 {
                     dic.TryAdd(entity.USER_ID, entity);
                 }
+
                 foreach (var entity in partyEntity.WaitMembers)
                 {
                     dic.TryAdd(entity.USER_ID, entity);
                 }
-                
+
                 List<Task> tasks = [];
-                
+
                 foreach (var selectedValue in selectedValues)
                 {
                     if (ulong.TryParse(selectedValue, out var userId))
@@ -185,15 +188,77 @@ public class MenuServices : BaseServices
                         if (dic.TryGetValue(userId, out var value))
                         {
                             tasks.Add(PartyService.KickMemberAsync(partyEntity, userId));
-                            ms += $"{value.USER_NICKNAME} 님을 추방하였습니다.\n"; 
+                            ms += $"{value.USER_NICKNAME} 님을 추방하였습니다.\n";
                         }
                     }
                 }
 
                 await Task.WhenAll(tasks);
-                
+
                 await component.DeleteOriginalResponseAsync();
-                await component.Channel.SendMessageAsync($"{partyClass.userNickname} 님이 아래의 파티원을 추방하였습니다.\n"+ ms);
+                await component.Channel.SendMessageAsync($"{partyClass.userNickname} 님이 아래의 파티원을 추방하였습니다.\n" + ms);
+                break;
+            case PartyConstant.MOVE_OWNER_KEY:
+                var select = selectedValues.FirstOrDefault();
+
+                if (select == null & !ulong.TryParse(select, out var result))
+                {
+                    await component.ModifyOriginalResponseAsync(m =>
+                    {
+                        m.Content = "대상이 선택되지 않았습니다!";
+                        m.Components = null;
+                        m.Embed = null;
+                    });
+                    return;
+                }
+
+                var guildId = component.GuildId ?? 0;
+
+                var guild = await Services.client.Rest.GetGuildAsync(guildId);
+                var getUser = await guild.GetUserAsync(result);
+                
+                if (getUser is null or {IsBot: true})
+                {
+                    await component.ModifyOriginalResponseAsync(m =>
+                    {
+                        m.Content = getUser == null ? "대상을 찾을 수 없습니다." : "봇은 대상이 될 수 없습니다!";
+                        m.Components = null;
+                        m.Embed = null;
+                    });
+                    await Services.RespondMessageWithExpire(component);
+                    return;
+                }
+
+                if (await PartyService.SetOwner(partyKey, result, getUser.DisplayName))
+                {
+                    partyEntity.OWNER_KEY = getUser.Id;
+                    _ = Task.Run(async () =>
+                    {
+                        var message = await component.Channel.GetMessageAsync(partyEntity.MESSAGE_KEY) as IUserMessage;
+                        await message.ReplyAsync($"**[{partyEntity.DISPLAY_NAME}]** 파티의 방장이 <@{getUser.Id}>({getUser.DisplayName})님 으로 변경되었습니다!");
+                    });
+                    
+                    // _ = component.FollowupAsync($"**[{partyEntity.DISPLAY_NAME}]** 파티의 방장이 <@{getUser.Id}>({getUser.DisplayName})님 으로 변경되었습니다!");
+                    
+                    await component.ModifyOriginalResponseAsync(m =>
+                    {
+                        m.Content = "방장을 변경하였습니다.";
+                        m.Components = null;
+                        m.Embed = null;
+                    });
+                    await Services.RespondMessageWithExpire(component);
+                }
+                else
+                {
+                    await component.ModifyOriginalResponseAsync(m =>
+                    {
+                        m.Content = "알 수 없는 오류가 발생하였습니다.";
+                        m.Components = null;
+                        m.Embed = null;
+                    });
+                    await Services.RespondMessageWithExpire(component);
+                }
+
                 break;
             case PartyConstant.DATE_PICKUP_KEY or PartyConstant.DATE_PICKUP_FIRST_KEY:
                 var guid = parts[2];

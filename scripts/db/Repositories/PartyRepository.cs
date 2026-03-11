@@ -539,6 +539,30 @@ WHERE PARTY_KEY = @partyKey
         }
     }
     
+    public static async Task<bool> SetOwner(string partyKey, ulong ownerKey, string name, MySqlConnection connection, MySqlTransaction transaction)
+    {
+
+        try
+        {
+            var sql = @"
+UPDATE PARTY
+SET OWNER_KEY= @ownerKey, OWNER_NICKNAME= @name
+WHERE PARTY_KEY = @partyKey
+    ";
+            
+            var affectedRows = await connection.ExecuteAsync(sql,
+                new { partyKey , ownerKey , name },
+                transaction: transaction);
+
+            return affectedRows > 0;
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine(e);
+            return false;
+        }
+    }
+    
     public static async Task<bool> SetExpireDate(string partyKey, DateTime dateTime, MySqlConnection connection, MySqlTransaction transaction)
     {
 

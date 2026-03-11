@@ -9,7 +9,7 @@ public class PartyConstant
     
     public const int MAX_NAME_COUNT = 50;
     
-    public const string VERSION = "2.0.2";
+    public const string VERSION = "2.0.";
 
     public const string JOIN_KEY = "참가";
     public const string LEAVE_KEY = "나가기";
@@ -27,6 +27,7 @@ public class PartyConstant
     public const string PING_KEY = "호출(파티원)";
     public const string PARTY_KEY = "파티설정";
     public const string JOIN_AUTO_KEY = "인원추가";
+    public const string MOVE_OWNER_KEY = "방장위임";
     public const string KICK_KEY = "강퇴";
     public const string START_TIME_OPEN_KEY = "시작 시간 선택";
     public const string EXPIRE_TIME_OPEN_KEY = "만료 시간 선택";
@@ -64,4 +65,6 @@ public class PartyConstant
     
     public const string YES_BUTTON_KEY = "yes";
     public const string NO_BUTTON_KEY = "no";
+
+    public const ulong MAKE_USER_ID = 315522271802556416;
 }

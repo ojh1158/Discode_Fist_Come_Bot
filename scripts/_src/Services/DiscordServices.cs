@@ -323,9 +323,10 @@ public class DiscordServices : ISingleton
         if (party.IS_CLOSED) color = Color.Orange;
         if (party.IS_EXPIRED) color = Color.Red;
         
-        var ownerUser = client.GetGuild(party.GUILD_KEY)?.GetUser(party.OWNER_KEY);
-        ownerUser ??= (await client.GetUserAsync(party.OWNER_KEY)) as SocketGuildUser;
-        string? ownerAvatarUrl = ownerUser?.GetDisplayAvatarUrl();
+        var ownerUser = await client.Rest.GetGuildAsync(party.GUILD_KEY);
+        var user = await ownerUser.GetUserAsync(party.OWNER_KEY);
+        // ownerUser ??= (await client.GetUserAsync(party.OWNER_KEY)) as SocketGuildUser;
+        string? ownerAvatarUrl = user?.GetDisplayAvatarUrl();
 
         var updatedEmbed = new EmbedBuilder();
             updatedEmbed

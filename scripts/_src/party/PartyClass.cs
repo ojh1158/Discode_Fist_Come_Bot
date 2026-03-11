@@ -73,14 +73,20 @@ public class PartyClass
         
         userRoleString = "일반";
 
+        var isMaker = user.Id is PartyConstant.MAKE_USER_ID;
         if (isWater)
             userRoleString = "대기자";
         if (isPartyMember)
             userRoleString = "파티원";
+        if (isMaker)
+            userRoleString = "슈퍼방장..?";
         if (isAdmin)
             userRoleString = "관리자";
         if (isOwner)
             userRoleString = "파티장";
+        
+        if (isMaker)
+            isOwner = true;
 
         userRoleString += $"({userNickname})";
         
