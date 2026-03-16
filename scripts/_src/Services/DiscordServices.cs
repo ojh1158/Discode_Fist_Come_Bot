@@ -317,8 +317,11 @@ public class DiscordServices : ISingleton
         {
             description += $"**파티장소: <#{party.VOICE_CHANNEL_KEY}> **\n";
         }
+        else
+        {
+            description += "\n";
+        }
 
-        description += "\n\n";
 
         description += $"** 참가자: {party.Members.Count}/{party.MAX_COUNT_MEMBER} **\n\n{memberList}";
 

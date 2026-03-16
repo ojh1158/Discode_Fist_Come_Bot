@@ -4,15 +4,11 @@ using DiscordBot.scripts._src.party;
 
 namespace DiscordBot.scripts._src.Services;
 
-public class BaseServices : ISingleton
+public class BaseServices(DiscordServices services) : ISingleton
 {
-    protected DiscordServices Services;
+    protected DiscordServices Services = services;
     
     private string warkText = "작업 중...";
-    public BaseServices(DiscordServices services)
-    {
-        Services = services;
-    }
 
     protected async Task InitCommands(SocketInteraction component, string action)
     {
