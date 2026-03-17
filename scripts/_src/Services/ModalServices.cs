@@ -173,8 +173,9 @@ public class ModalServices : BaseServices
                     _ = Services.RespondMessageWithExpire(modal);
                     return;
                 }
+                var partyMemberEntities = party.Members[..party.MAX_COUNT_MEMBER];
 
-                if (Math.Min(party.Members.Count, 10) < teamCount)
+                if (Math.Min(partyMemberEntities.Count, 10) < teamCount)
                 {
                     await modal.ModifyOriginalResponseAsync(m => m.Content = "멤버 인원 또는 10개보다 팀이 많을 수 없습니다!");
                     _ = Services.RespondMessageWithExpire(modal);
@@ -183,7 +184,7 @@ public class ModalServices : BaseServices
                 
                 var randomList = new List<ulong>();
                 
-                foreach (var entity in party.Members) randomList.Add(entity.USER_ID);
+                foreach (var entity in partyMemberEntities) randomList.Add(entity.USER_ID);
                 
                 // 여기서 셔플
                 var rng = Random.Shared;
@@ -213,7 +214,7 @@ public class ModalServices : BaseServices
                     for (int j = 0; j < currentTeamSize && memberIndex < randomList.Count; j++)
                     {
                         var random = randomList[memberIndex];
-                        teamMembers.Add($"<@{random}> ({party.Members.Find(f => f.USER_ID == random)?.USER_NICKNAME ?? "알 수 없음"})");
+                        teamMembers.Add($"<@{random}> ({partyMemberEntities.Find(f => f.USER_ID == random)?.USER_NICKNAME ?? "알 수 없음"})");
                         memberIndex++;
                     }
                     

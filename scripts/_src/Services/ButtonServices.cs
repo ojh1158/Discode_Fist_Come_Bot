@@ -352,7 +352,7 @@ public class ButtonServices : BaseServices
                     return;
                 }
                 
-                var maxCount = Math.Min(party.Members.Count, 10);
+                var maxCount = Math.Min(party.MemberOnly.Count, 10);
                 
                 var teamModal = new ModalBuilder()
                     .WithTitle("팀 만들기")

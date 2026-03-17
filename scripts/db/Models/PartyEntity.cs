@@ -18,6 +18,18 @@ public class PartyEntity : IDbSetup
     
     // 파티 멤버 리스트 (Join 시 자동 매핑)
     public List<PartyMemberEntity> Members { get; set; } = new();
+    public List<PartyMemberEntity> MemberOnly
+    {
+        get
+        {
+            if (Members.Count > MAX_COUNT_MEMBER)
+            {
+                return Members[..MAX_COUNT_MEMBER];
+            }
+            return Members;
+        }
+    }
+
     public List<PartyMemberEntity> WaitMembers { get; set; } = new();
     
     public DateTime? EXPIRE_DATE { get; set; }

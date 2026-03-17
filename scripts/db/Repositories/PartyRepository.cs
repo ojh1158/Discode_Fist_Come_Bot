@@ -153,7 +153,6 @@ WHERE MESSAGE_KEY = @MESSAGE_KEY
 UPDATE PARTY
 SET MAX_COUNT_MEMBER = @newSize
 WHERE PARTY_KEY = @partyKey
-FOR UPDATE
 ";
         var affectedRows = await connection.ExecuteAsync(sql,
             new { newSize, partyKey },
