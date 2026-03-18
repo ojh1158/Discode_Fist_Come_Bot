@@ -493,6 +493,7 @@ public class DiscordServices : ISingleton
             allList.AddRange(partyEntity.WaitMembers);
             
             var dic = allList.ToDictionary(d => d.USER_ID, d => d);
+            var memberOnly = partyEntity.MemberOnly;
             
             switch (action)
             {
@@ -511,7 +512,7 @@ public class DiscordServices : ISingleton
                                 _ = owner.SendMessageAsync($"<@{user.Id}>({dic[user.Id].USER_NICKNAME}) 님이 {partyEntity.DISPLAY_NAME} 에 참가하였습니다! {ToLinkChanner(partyEntity)}");
                             }
                             
-                            if (allList.Count == partyEntity.MAX_COUNT_MEMBER && ownerSetting is { ALL_ALERT_FLAG: true, MY_PARTY_FULL_ALERT_FLAG: true })
+                            if (memberOnly.Count == partyEntity.MAX_COUNT_MEMBER && ownerSetting is { ALL_ALERT_FLAG: true, MY_PARTY_FULL_ALERT_FLAG: true })
                             {
                                 owner ??= await client.GetUserAsync(partyEntity.OWNER_KEY);
                                 _ = owner.SendMessageAsync($"{partyEntity.DISPLAY_NAME} 파티가 모였습니다! {ToLinkChanner(partyEntity)}");
@@ -519,9 +520,9 @@ public class DiscordServices : ISingleton
                         });
                     }
 
-                    if (allList.Count == partyEntity.MAX_COUNT_MEMBER)
+                    if (memberOnly.Count == partyEntity.MAX_COUNT_MEMBER)
                     {
-                        foreach (var partyEntityMember in partyEntity.Members)
+                        foreach (var partyEntityMember in memberOnly)
                         {
                             if (partyEntityMember.USER_ID != user.Id && partyEntityMember.USER_ID != partyEntity.OWNER_KEY)
                             {
@@ -562,7 +563,7 @@ public class DiscordServices : ISingleton
                     var target = await partyService.GetPartyEntityAsync(partyEntity.PARTY_KEY);
                     if (target != null)
                     {
-                        foreach (var partyMemberEntity in target.Members)
+                        foreach (var partyMemberEntity in memberOnly)
                         {
                             if (partyMemberEntity.USER_ID == user.Id) continue;
                             
