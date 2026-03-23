@@ -35,12 +35,12 @@ public class PartyClass
             return "길드 채팅에서만 사용할 수 있습니다.";
         }
 
-        var findIndex = Entity.Members.FindIndex(m => m.USER_ID == userId);
+        var findIndex = Entity.MemberOnly.FindIndex(m => m.USER_ID == userId);
         
         guildUser = user;
         isAdmin = user.GuildPermissions is { Administrator: true };
         isWater = findIndex > partyEntity.MAX_COUNT_MEMBER;
-        isPartyMember = findIndex <= partyEntity.MAX_COUNT_MEMBER;
+        isPartyMember = findIndex != -1 && findIndex <= partyEntity.MAX_COUNT_MEMBER;
         isNone = !isAdmin && !isWater && findIndex == -1;
         
         // 길드에서 최신 유저 정보를 가져와서 닉네임 확인 (Rest API 사용)
