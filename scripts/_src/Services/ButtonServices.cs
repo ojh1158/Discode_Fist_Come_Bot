@@ -149,10 +149,13 @@ public class ButtonServices : BaseServices
                     if (party.Members.Count > party.MAX_COUNT_MEMBER)
                     {
                         var userEntity = party.Members[party.MAX_COUNT_MEMBER];
-
-                        var user = await Services.client.Rest.GetUserAsync(userEntity.USER_ID);
                         
-                        Services.SendUserAlert(afterParty, user, Constant.USER_ALERT_JOIN_PARTY_TO_WAIT_FLAG);
+                        if (afterParty.MemberOnly.Find(d => d.USER_ID == userEntity.USER_ID) != null)
+                        {
+                            var user = await Services.client.Rest.GetUserAsync(userEntity.USER_ID);
+                            
+                            Services.SendUserAlert(afterParty, user, Constant.USER_ALERT_JOIN_PARTY_TO_WAIT_FLAG);
+                        }
                     }
                     
                     party = afterParty;
